@@ -8,7 +8,6 @@ import { saveScan, updateScan } from "../../data/scans";
 import { samplesSince } from "../../capture/sensors";
 import { runPipeline } from "../../pipeline/runPipeline";
 import { VIEWS, type ProgressStage, type ViewCapture } from "../../types";
-import { initVision } from "../../vision";
 import { closeFrames, errorMessage, type AppContext } from "../context";
 import { buildScanDoc, overallProgress, planRetakes, STAGE_TEXT, updatedProfile } from "../processingLogic";
 import { loadDebug } from "../debug";
@@ -57,9 +56,8 @@ export function render(root: HTMLElement, ctx: AppContext): () => void {
       }
     }
 
+    // runPipeline -> detectPoseHeavy / segmentPerson load their models on first use.
     stageEl.textContent = "Loading the measuring models";
-    await initVision({ heavy: true, segmenter: true });
-    if (!alive) return;
 
     const result = await runPipeline({
       captures,

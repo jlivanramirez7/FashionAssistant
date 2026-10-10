@@ -183,7 +183,8 @@ describe("[E ui-flow] labels, groups, colours and units", () => {
     const label = fn(m, "measurementLabel", "E ui-flow", FORMAT);
     const groups = fn(m, "groupMeasurements", "E ui-flow", FORMAT)(fullMeasurements());
     const shown = groups.flatMap((g: { keys: string[] }) => g.keys);
-    expect([...shown].sort(), "Results must list every measurement (M5 exit)").toEqual([...MEASUREMENT_KEYS].sort());
+    const expectedShown = MEASUREMENT_KEYS.filter((k) => k !== "bust"); // bust = chest, one row
+    expect([...shown].sort(), "Results must list every measurement (M5 exit), bust folded into chest").toEqual([...expectedShown].sort());
     expect(groups.map((g: { title: string }) => g.title)).toEqual(["Tops", "Bottoms", "Dresses & one-pieces", "Shoes", "General"]);
     for (const k of MEASUREMENT_KEYS) {
       for (const bt of ["male", "female", "unspecified"]) expect(label(k, bt).length, `${k}/${bt}`).toBeGreaterThan(0);
@@ -194,6 +195,35 @@ describe("[E ui-flow] labels, groups, colours and units", () => {
       expect(m.KEY_VIEWS.backLength).toContain("back");
       expect(m.KEY_VIEWS.footLength).toContain("side");
     }
+  });
+  it("chest/bust: one UI row (chest), bust hidden but every other key visible (orchestrator decision)", async () => {
+    const m = await loadModule(FORMAT, "E ui-flow");
+    const visible = fn(m, "isVisibleKey", "E ui-flow", FORMAT);
+    const hidden = MEASUREMENT_KEYS.filter((k) => !visible(k));
+    expect(hidden, "only bust is hidden").toEqual(["bust"]);
+    const vm = fn(m, "visibleMeasurements", "E ui-flow", FORMAT);
+    const full = fullMeasurements();
+    const shown = vm(full);
+    expect(shown.bust).toBeUndefined();
+    expect(shown.chest).toEqual(full.chest);
+    expect(full.bust, "visibleMeasurements must not mutate its input").toBeDefined();
+    const onlyBust = vm({ bust: full.bust });
+    expect(onlyBust.chest, "chest falls back to a stored bust value").toEqual(full.bust);
+    if (m.TAPE_KEYS) {
+      expect(m.TAPE_KEYS).not.toContain("bust");
+      expect(m.TAPE_KEYS).not.toContain("height");
+      expect(m.TAPE_KEYS).toContain("chest");
+    }
+  });
+  it("S9: the chest tape value is saved under BOTH chest and bust (cm)", async () => {
+    const m = await loadModule(FORMAT, "E ui-flow");
+    const build = fn(m, "buildTapeMeasurements", "E ui-flow", FORMAT);
+    const t = build({ chest: "38.5", inseam: "30" }, "in");
+    near(t.chest, 97.79, 0.01, "chest cm");
+    expect(t.bust, "bust must mirror chest").toBe(t.chest);
+    near(t.inseam, 76.2, 0.01, "inseam cm");
+    const none = build({ inseam: "30", bust: "40" }, "in");
+    expect(none.bust, "no chest value => no bust value").toBeUndefined();
   });
   it("confidence colours: >= 0.75 green, >= 0.5 amber, else red", async () => {
     const m = await loadModule(FORMAT, "E ui-flow");

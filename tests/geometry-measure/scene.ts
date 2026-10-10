@@ -3,7 +3,7 @@ import type { Landmark, PersonMask, ViewName } from "../../src/types";
 import { buildCamera } from "../../src/geometry/camera";
 import { makeViewPlane } from "../../src/geometry/plane";
 import type { ViewData } from "../../src/measure/compute";
-import { feetPoint, headPoint } from "../../src/pipeline/runPipeline";
+import { feetPoint, feetRowFor, headPoint } from "../../src/pipeline/runPipeline";
 import { Body, DEFAULT_CAM, landmarksPx, profileFor, renderMask, rng, type SynthCamera } from "./synthetic";
 
 export const DIST: Record<ViewName, number> = { front: 250, side: 245, back: 255 };
@@ -56,7 +56,7 @@ export function viewDataFor(frames: SceneFrame[], body: Body, cam: SynthCamera =
         const c = buildCamera(profile, { tiltDeg: cam.thetaDeg, rollDeg: cam.rollDeg }, cam.width, cam.height);
         const feet = feetPoint(f.landmarksPx, f.mask)!;
         const head = headPoint(f.landmarksPx, f.mask)!;
-        const plane = makeViewPlane(c, view, feet.v, head.v, body.H, { uFeet: feet.u, uHead: head.u });
+        const plane = makeViewPlane(c, view, feetRowFor(c, view, feet, body.H), head.v, body.H, { uFeet: feet.u, uHead: head.u });
         return { landmarksPx: f.landmarksPx, mask: f.mask, plane };
       }),
     });

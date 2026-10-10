@@ -178,9 +178,13 @@ Device profile (auto-detected, no user input):
      maximum resolution.
   4. Focal length in pixels from the spec, for the actual video
      size (diagonal definition of 35 mm-equivalent, 43.27 mm):
-       f_px = front35mmEqMm * sqrt(W^2 + H^2) / 43.27
-     This assumes the video uses the full sensor width; if the video
-     mode crops the sensor the height solve (below) corrects it.
+       long  = max(W, H)
+       short = long * sensor aspect (frontSensorAspect, default 4:3)
+       f_px  = front35mmEqMm * sqrt(long^2 + short^2) / 43.27
+     The 35 mm-equivalent is defined on the full sensor diagonal,
+     and 16:9 video is a crop of the 4:3 sensor's long side; using
+     the video's own diagonal would come out ~9% low. Any remaining
+     crop error is corrected by the height solve (below).
   5. Sensors: DeviceMotionEvent accelerationIncludingGravity, sampled
      at ~60 Hz and averaged over each capture hold, gives tilt theta
      and roll (DeviceOrientationEvent beta/gamma as a fallback).
@@ -221,6 +225,28 @@ Distance from the feet:
 
   d is recomputed separately for each view (front, side, back) from
   that view's feet row, because the user moves slightly when turning.
+
+  Feet row: the absolute row comes from the body outline's lowest
+  edge near the feet (where the sole meets the floor). The heel and
+  foot-index landmarks only give the offset from that lowest point to
+  the floor point under the ankle (heel + 0.2 x (toe - heel)), so a
+  shared error in landmark height cancels. In the side view the near
+  foot's outer edge is ~0.025 x height closer than the body plane and
+  is corrected for. This matters: with the lens ~13.5 cm up and the
+  user 2.5 m away, 1 cm of error at the feet moves d by ~18 cm.
+
+  If d cannot be determined (feet ray at or above the horizon, h <= 0
+  or d > 50 m), distanceFromFeet returns 0 as an "invalid" marker;
+  the view plane then falls back to the typed height alone and
+  flags the view for retake.
+
+Head-top correction:
+  From a camera near the floor, the top of the head outline sits
+  slightly above the true crown (the skull is a rounded 3D shape
+  seen from below). The view plane subtracts sqrt(c^2 + T^2 b^2) - c
+  using head semi-axes of 0.066 H (tall), 0.057 H (front-back) and
+  0.043 H (side-to-side), H = typed height. Without it, height reads
+  ~1% high.
 
 Perspective correction:
   Each landmark's pixel ray is rotated by the pitch phi into a level
@@ -275,7 +301,9 @@ kept in memory; heavy processing waits until all steps are done.
   4. Position the user: "Step back... stop." Wait until the whole
      body is in frame and feet are visible on the floor (ankles and
      nose landmarks in frame, body ~70% of frame height, inside the
-     central ~80% of the frame).
+     central ~80% of the frame for nose, shoulders, hips and ankles;
+     wrists only need to stay inside the frame, because an A-pose at
+     70% of frame height puts them near the edges).
   5. Step 1 of 3 - Front A-pose: arms ~45 deg out from the body,
      palms forward, feet hip-width apart. Hold ~1 s (~10 frames).
      Sleeve and shirt-sleeve come from this pose (arm segment
@@ -465,7 +493,10 @@ S7. Results
   - Grouped by garment type (see the measurement list in section 7):
     Tops, Bottoms, Dresses & one-pieces, Shoes, General
   - The chest row is labelled "Bust" when bodyType is "female",
-    "Chest" when "male", and "Chest / bust" when "unspecified"
+    "Chest" when "male", and "Chest / bust" when "unspecified".
+    Chest and bust are one measurement, so the separate `bust` key
+    is never shown as its own row (it is still stored); a tape value
+    entered on that row in S9 is saved under both keys
   - Measurements only: no size recommendation in v1 (moved to v2
     with brand charts and fit-ease rules)
   - Tapping a row shows a small body diagram with where that

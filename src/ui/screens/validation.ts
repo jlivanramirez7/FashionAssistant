@@ -5,7 +5,7 @@ import type { MeasurementKey, ScanDoc, Units } from "../../types";
 import { formatLength, lengthInputValue } from "../../units";
 import { errorMessage, type AppContext } from "../context";
 import { button, h, linkButton, screen, setChildren } from "../dom";
-import { buildTapeMeasurements, measurementLabel, TAPE_KEYS } from "../format";
+import { buildTapeMeasurements, measurementLabel, TAPE_KEYS, tapeForField, visibleMeasurements } from "../format";
 import { createUnitToggle } from "../parts/unitToggle";
 
 export function render(root: HTMLElement, ctx: AppContext): () => void {
@@ -52,8 +52,9 @@ export function render(root: HTMLElement, ctx: AppContext): () => void {
 
   function draw(sc: ScanDoc, tape: Partial<Record<MeasurementKey, number>> | undefined): void {
     inputs.clear();
+    const shown = visibleMeasurements(sc.measurements);
     const rows = TAPE_KEYS.map((k) => {
-      const v = sc.measurements[k];
+      const v = shown[k];
       const input = h("input", {
         type: "number",
         inputmode: "decimal",
@@ -62,7 +63,7 @@ export function render(root: HTMLElement, ctx: AppContext): () => void {
         class: "num",
         "aria-label": `${measurementLabel(k, sc.bodyType)} tape (${units})`,
       });
-      const t = tape?.[k];
+      const t = tapeForField(tape, k);
       if (t !== undefined) input.value = lengthInputValue(t, units);
       inputs.set(k, input);
       return h("div", { class: "tape-row" },

@@ -113,8 +113,9 @@ function landmarkPoints(view: ViewName): Map<number, Pt> {
     s(LM.leftHip, B.hipY); s(LM.rightHip, B.hipY);
     s(LM.leftKnee, B.kneeY); s(LM.rightKnee, B.kneeY);
     s(LM.leftAnkle, B.ankleY); s(LM.rightAnkle, B.ankleY);
-    s(LM.leftHeel, 2, 5); s(LM.rightHeel, 2, 5);
-    s(LM.leftFootIndex, 1, -16); s(LM.rightFootIndex, 1, -16);
+    // Heel and foot index are floor-contact points (flat-footed stance), orchestrator convention.
+    s(LM.leftHeel, 0, 5); s(LM.rightHeel, 0, 5);
+    s(LM.leftFootIndex, 0, -16); s(LM.rightFootIndex, 0, -16);
     return m;
   }
   const sgn = view === "front" ? 1 : -1; // back view: left side at -X
@@ -133,8 +134,8 @@ function landmarkPoints(view: ViewName): Map<number, Pt> {
   pair(LM.leftHip, LM.rightHip, 9, B.hipY);
   pair(LM.leftKnee, LM.rightKnee, 9, B.kneeY);
   pair(LM.leftAnkle, LM.rightAnkle, 9, B.ankleY);
-  pair(LM.leftHeel, LM.rightHeel, 9, 2);
-  pair(LM.leftFootIndex, LM.rightFootIndex, 11, 1);
+  pair(LM.leftHeel, LM.rightHeel, 9, 0); // floor contact
+  pair(LM.leftFootIndex, LM.rightFootIndex, 11, 0); // floor contact
   return m;
 }
 

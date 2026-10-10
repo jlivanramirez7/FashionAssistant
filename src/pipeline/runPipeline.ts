@@ -19,7 +19,7 @@ import {
   type ViewPlane,
 } from "../types";
 import { buildCamera, focalForFrame, withFocalLength } from "../geometry/camera";
-import { makeViewPlane, solveFocalLength } from "../geometry/plane";
+import { distanceFromFeet, makeViewPlane, solveFocalLength } from "../geometry/plane";
 import { computeMeasurements, MIN_VISIBILITY, type FrameData, type ViewData } from "../measure/compute";
 import { bottomRow, topRow } from "../measure/silhouette";
 
@@ -63,27 +63,90 @@ export function toPixelLandmarks(lms: Landmark[], width: number, height: number)
 }
 
 /**
- * PURE: image row (and column) where the feet touch the floor below the ankles.
- * Per foot: heel row + ANKLE_ALONG_FOOT * (toe row - heel row); averaged over feet.
- * Falls back to the bottom mask row. landmarksPx in pixels.
+ * PURE: image point where the floor meets the user plane (below the ankles).
+ *
+ * The feet row drives the distance with a large gain (at h ~ 13.5 cm, d ~ 250 cm, a
+ * 1 cm vertical error at the feet moves d by ~18 cm), so the absolute row comes from
+ * the mask's lowest row near the feet (the sole/floor contact edge), not from the
+ * heel/toe landmarks, whose height above the floor is not reliable. Landmarks only
+ * give the RELATIVE offset between the lowest foot point and the floor point under the
+ * ankle (heel + ANKLE_ALONG_FOOT * (toe - heel)): in the front view the lowest contact
+ * is the toe tips (closer to the camera, lower in the image), in the back view the
+ * heels, in the side view the whole sole. Any common landmark offset cancels.
+ * Falls back to landmarks alone (no mask) or the mask alone (no foot landmarks).
  */
 export function feetPoint(landmarksPx: Landmark[], mask: PersonMask | null): { u: number; v: number } | null {
   const pts: { u: number; v: number }[] = [];
+  const footLms: { u: number; v: number }[] = [];
   for (const [h, t] of [[LM.leftHeel, LM.leftFootIndex], [LM.rightHeel, LM.rightFootIndex]] as const) {
     const hp = px(landmarksPx, h);
     const tp = px(landmarksPx, t);
+    if (hp) footLms.push(hp);
+    if (tp) footLms.push(tp);
     if (hp && tp) pts.push({ u: hp.u + ANKLE_ALONG_FOOT * (tp.u - hp.u), v: hp.v + ANKLE_ALONG_FOOT * (tp.v - hp.v) });
     else if (hp ?? tp) pts.push((hp ?? tp)!);
   }
-  if (pts.length) return { u: pts.reduce((s, p) => s + p.u, 0) / pts.length, v: pts.reduce((s, p) => s + p.v, 0) / pts.length };
+  const lmPoint = pts.length
+    ? { u: pts.reduce((s, p) => s + p.u, 0) / pts.length, v: pts.reduce((s, p) => s + p.v, 0) / pts.length }
+    : null;
   if (mask) {
-    const a = px(landmarksPx, LM.leftAnkle);
-    const b = px(landmarksPx, LM.rightAnkle);
-    const cu = a && b ? (a.u + b.u) / 2 : (a ?? b)?.u ?? mask.width / 2;
-    const r = bottomRow(mask, cu - 0.15 * mask.width, cu + 0.15 * mask.width);
-    if (r !== null) return { u: cu, v: r + 1 };
+    let uMin: number;
+    let uMax: number;
+    if (footLms.length) {
+      const margin = 0.05 * mask.width;
+      uMin = Math.min(...footLms.map((p) => p.u)) - margin;
+      uMax = Math.max(...footLms.map((p) => p.u)) + margin;
+    } else {
+      const a = px(landmarksPx, LM.leftAnkle);
+      const b = px(landmarksPx, LM.rightAnkle);
+      const cu = a && b ? (a.u + b.u) / 2 : (a ?? b)?.u ?? mask.width / 2;
+      uMin = cu - 0.15 * mask.width;
+      uMax = cu + 0.15 * mask.width;
+    }
+    const r = bottomRow(mask, uMin, uMax);
+    if (r !== null) {
+      const contact = r + 1; // bottom edge of the lowest mask row
+      if (lmPoint && footLms.length) {
+        const lowest = Math.max(...footLms.map((p) => p.v));
+        return { u: lmPoint.u, v: contact - Math.max(0, lowest - lmPoint.v) };
+      }
+      return { u: lmPoint?.u ?? (uMin + uMax) / 2, v: contact };
+    }
   }
-  return null;
+  return lmPoint;
+}
+
+/** Side view: the lowest mask point is the near foot's outer edge, about half a foot width (fraction of height) nearer than the user plane. */
+export const SIDE_FOOT_HALF_WIDTH_FRAC = 0.025;
+
+/**
+ * PURE: feet row moved so the floor distance grows by deltaCm (secant on distanceFromFeet).
+ * Returns the input row when the distance cannot be determined.
+ */
+export function shiftFeetRow(cam: CameraModel, v: number, u: number, deltaCm: number): number {
+  const d0 = distanceFromFeet(cam, v, u);
+  if (!(d0 > 0) || !deltaCm) return v;
+  const target = d0 + deltaCm;
+  let a = v;
+  let fa = d0 - target;
+  let b = v - 1;
+  let fb = distanceFromFeet(cam, b, u) - target;
+  for (let i = 0; i < 20 && Math.abs(fb) > 1e-4; i++) {
+    if (!(Math.abs(fb - fa) > 1e-12)) break;
+    const c = b - (fb * (b - a)) / (fb - fa);
+    const dc = distanceFromFeet(cam, c, u);
+    if (!(dc > 0)) break;
+    a = b;
+    fa = fb;
+    b = c;
+    fb = dc - target;
+  }
+  return Math.abs(fb) < 0.5 ? b : v;
+}
+
+/** Feet row used for the geometry of a view (side-view near-foot correction). */
+export function feetRowFor(cam: CameraModel, view: ViewName, feet: { u: number; v: number }, heightCm: number): number {
+  return view === "side" && heightCm > 0 ? shiftFeetRow(cam, feet.v, feet.u, SIDE_FOOT_HALF_WIDTH_FRAC * heightCm) : feet.v;
 }
 
 /**
@@ -220,7 +283,7 @@ export async function runPipeline(args: {
   const solvedProfileF: number[] = [];
   for (const w of work) {
     if (!w.feet || !w.head) continue;
-    const f = solveFocalLength(w.camera, w.feet.v, w.head.v, H, w.view, { uFeet: w.feet.u, uHead: w.head.u });
+    const f = solveFocalLength(w.camera, feetRowFor(w.camera, w.view, w.feet, H), w.head.v, H, w.view, { uFeet: w.feet.u, uHead: w.head.u });
     if (f !== null) {
       const scale = focalForFrame(profile, w.frame.width, w.frame.height) / profile.focalLengthPx;
       if (scale > 0) solvedProfileF.push(f / scale);
@@ -253,7 +316,7 @@ export async function runPipeline(args: {
     const dists: number[] = [];
     ws.forEach((w, i) => {
       if (w.landmarksPx && w.mask && w.feet && w.head) {
-        w.plane = makeViewPlane(w.camera, view, w.feet.v, w.head.v, H, { uFeet: w.feet.u, uHead: w.head.u });
+        w.plane = makeViewPlane(w.camera, view, feetRowFor(w.camera, view, w.feet, H), w.head.v, H, { uFeet: w.feet.u, uHead: w.head.u });
         frames.push({ landmarksPx: w.landmarksPx, mask: w.mask, plane: w.plane });
         agreements.push(w.plane.scaleAgreementPct);
         dists.push(w.plane.distanceCm);

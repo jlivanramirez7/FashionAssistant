@@ -11,6 +11,7 @@ import {
   groupMeasurements,
   hintText,
   homeSummary,
+  isVisibleKey,
   KEY_VIEWS,
   lowConfidenceKeys,
   measurementLabel,
@@ -18,6 +19,8 @@ import {
   retakeViewsFor,
   STEP_TEXT,
   TAPE_KEYS,
+  tapeForField,
+  visibleMeasurements,
 } from "../../src/ui/format";
 import { coverMap, toCanvas } from "../../src/ui/parts/poseGuide";
 
@@ -45,6 +48,38 @@ describe("chest label", () => {
     expect(measurementLabel("chest", "female")).toBe("Bust");
     expect(measurementLabel("naturalWaist", "female")).toBe("Waist");
     expect(measurementLabel("bust", "male")).toBe("Bust");
+  });
+});
+
+describe("chest / bust: one visible row", () => {
+  it("bust is hidden, chest visible", () => {
+    expect(isVisibleKey("bust")).toBe(false);
+    expect(isVisibleKey("chest")).toBe(true);
+    expect(MEASUREMENT_KEYS.filter((k) => !isVisibleKey(k))).toEqual(["bust"]);
+  });
+  it("visibleMeasurements drops bust and falls back to it for chest", () => {
+    const both: Measurements = { chest: mv(98), bust: mv(97), inseam: mv(80) };
+    expect(visibleMeasurements(both)).toEqual({ chest: mv(98), inseam: mv(80) });
+    expect(visibleMeasurements({ bust: mv(97) })).toEqual({ chest: mv(97) });
+    expect(both.bust).toBeDefined(); // input untouched (still stored)
+    expect(visibleMeasurements(undefined)).toEqual({});
+  });
+  it("Results groups show a single chest row in Tops, labelled by body type, and no bust row", () => {
+    const m: Measurements = { chest: mv(98), bust: mv(98), underbust: mv(85) };
+    const g = groupMeasurements(m);
+    expect(g.find((x) => x.group === "tops")?.keys).toEqual(["chest"]);
+    expect(g.find((x) => x.group === "dresses")?.keys).toEqual(["underbust"]);
+    expect(g.flatMap((x) => x.keys)).not.toContain("bust");
+  });
+  it("Copy all and Home summary list it once", () => {
+    const scan = { createdAt: 0, bodyType: "female" as const, measurements: { chest: mv(inToCm(38.5)), bust: mv(inToCm(38.5)) } };
+    const text = copyAllText(scan, "in");
+    expect(text.match(/Bust/g)?.length).toBe(1);
+    expect(homeSummary(scan, "in")).toEqual(['Bust 38.5"']);
+    expect(homeSummary({ bodyType: "unspecified", measurements: { bust: mv(inToCm(36)) } }, "in")).toEqual(['Chest / bust 36.0"']);
+  });
+  it("retake planning ignores the hidden bust key", () => {
+    expect(retakeViewsFor({ bust: mv(97, 0.2), chest: mv(98, 0.9) })).toEqual([]);
   });
 });
 
@@ -143,13 +178,22 @@ describe("dates and copy", () => {
 });
 
 describe("tape measurements", () => {
-  it("has a field for every key except height", () => {
+  it("has a field for every key except height and the hidden bust", () => {
     expect(TAPE_KEYS).not.toContain("height");
-    expect(TAPE_KEYS.length).toBe(MEASUREMENT_KEYS.length - 1);
+    expect(TAPE_KEYS).not.toContain("bust");
+    expect(TAPE_KEYS).toContain("chest");
+    expect(TAPE_KEYS.length).toBe(MEASUREMENT_KEYS.length - 2);
   });
-  it("converts typed values to cm and drops blanks", () => {
-    expect(buildTapeMeasurements({ chest: "38.5", inseam: "", neck: "abc" }, "in")).toEqual({ chest: 97.79 });
-    expect(buildTapeMeasurements({ chest: "98.4" }, "cm")).toEqual({ chest: 98.4 });
+  it("converts typed values to cm, drops blanks, saves chest under chest AND bust", () => {
+    expect(buildTapeMeasurements({ chest: "38.5", inseam: "", neck: "abc" }, "in")).toEqual({ chest: 97.79, bust: 97.79 });
+    expect(buildTapeMeasurements({ chest: "98.4" }, "cm")).toEqual({ chest: 98.4, bust: 98.4 });
+    expect(buildTapeMeasurements({ inseam: "80", chest: "" }, "cm")).toEqual({ inseam: 80 });
+  });
+  it("prefills the chest field from chest, else from a stored bust value", () => {
+    expect(tapeForField({ chest: 98, bust: 97 }, "chest")).toBe(98);
+    expect(tapeForField({ bust: 97 }, "chest")).toBe(97);
+    expect(tapeForField(undefined, "chest")).toBeUndefined();
+    expect(tapeForField({ inseam: 80 }, "inseam")).toBe(80);
   });
 });
 

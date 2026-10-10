@@ -5,6 +5,8 @@ import {
   MAX_RETAKES_PER_STEP,
   overallProgress,
   planRetakes,
+  STAGE_ORDER,
+  STAGE_WEIGHTS,
   updatedProfile,
 } from "../../src/ui/processingLogic";
 
@@ -50,9 +52,23 @@ describe("overallProgress", () => {
   it("maps stage + fraction to 0..1", () => {
     expect(overallProgress("pose", 0)).toBe(0);
     expect(overallProgress("measure", 1)).toBe(1);
-    expect(overallProgress("front", 0.5)).toBeCloseTo(2.5 / 6);
-    expect(overallProgress("side", NaN)).toBeCloseTo(3 / 6);
-    expect(overallProgress("pose", 7)).toBeCloseTo(1 / 6);
+    expect(overallProgress("pose", 0.5)).toBeCloseTo(0.225);
+    expect(overallProgress("outline", 0)).toBeCloseTo(0.45);
+    expect(overallProgress("outline", 1)).toBeCloseTo(0.9);
+    expect(overallProgress("front", 0.5)).toBeCloseTo(0.91);
+    expect(overallProgress("side", NaN)).toBeCloseTo(0.92);
+    expect(overallProgress("pose", 7)).toBeCloseTo(0.45);
+  });
+  it("weights sum to 1 and progress never goes backwards through the stage order", () => {
+    expect(Object.values(STAGE_WEIGHTS).reduce((a, b) => a + b, 0)).toBeCloseTo(1);
+    let prev = -1;
+    for (const s of STAGE_ORDER) {
+      for (const f of [0, 0.5, 1]) {
+        const p = overallProgress(s, f);
+        expect(p).toBeGreaterThanOrEqual(prev);
+        prev = p;
+      }
+    }
   });
 });
 

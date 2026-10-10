@@ -50,6 +50,7 @@ Each line: invariant - who must keep it - where it is enforced.
 - I4 Lens height `h = L_lens * sin(theta)`; generic L_lens = 14 cm, 26 mm-eq. - B, C - conventions.
 - I5 Focal length: `f_px = f35 * hypot(long, long * sensorAspect) / 43.27`, with the default sensor "4:3" (orchestrator contract update; it replaces the doc's video-diagonal formula, which is the "16:9" case). Rescaled by the ratio of the long sides when the capture size changes (B `buildProfile`, C `buildCamera`). Saved `paper`/`height-solve` values override the spec. - B, C - conventions.
 - I6 Floor distance `alpha = atan((v-cy)/fy) - phi`, `d = h/tan(alpha)`, accurate to < 0.05 cm on an exact scene; returns a non-positive value when undeterminable (C returns 0, never NaN/Infinity, so callers must treat `<= 0` as invalid). - C - conventions.
+- I6b Feet convention (orchestrator, approved): heel and foot-index landmarks are FLOOR-CONTACT points (flat-footed). The feet row's absolute height comes from the mask's bottom edge near the feet; landmarks only give the heel->toe offset (read as foot depth; floor point under the ankle = heel + 0.2 x (toe - heel)). Side view: the lowest mask point is the near foot's outer edge, assumed 0.025 x H nearer than the body plane. Gain: 1 cm of feet-row height error is about 18 cm of distance, so never take the feet row from landmark heights. QA scene: heel/toe Y = 0; the pipeline gives front/back within 2 cm and side within 5 cm. - C - pipeline-e2e.
 - I7 Head row = silhouette top of a 3D head, not the crown. C applies a "crown excess" `sqrt(c^2 + T^2 b^2) - c` (head 0.066H x 0.057H front/back, 0.043H side). QA's `_scene.ts` computes the same tangent numerically and agrees. Heights, `heightScale` and `scaleAgreementPct` depend on this. - C - conventions.
 - I8 Height solve: `solveFocalLength` recovers the true f within 1% when the spec is 10% off. Above a 5% difference the solved value wins (`solvedFocalLengthPx`). - C - conventions + pipeline-e2e.
 
@@ -62,6 +63,7 @@ Each line: invariant - who must keep it - where it is enforced.
 - I10a MEASUREMENT_KEYS coverage: all 23 keys have one spec matching the section 7 table (group, kind, target). The Results screen groups list every key (Tops, Bottoms, Dresses & one-pieces, Shoes, General). Every key has a label, `KEY_VIEWS` entry, Firestore round trip (measurements, raw, tape) and a validationStats row (keys with a target). - orchestrator, E, A - spec-coverage.
 - I10b bust = chest: same spec kind and target; the pipeline must output `bust.valueCm === chest.valueCm`. - C - pipeline-e2e.
 - I10c Chest label: "Bust" (female), "Chest" (male), "Chest / bust" (unspecified). - E - spec-coverage.
+- I10c2 One chest/bust row (orchestrator decision): `isVisibleKey` hides ONLY `bust`. Results, Home, Copy all and the S9 fields show one `chest` row labelled by bodyType, and chest falls back to a stored bust value. `bust` is still computed and stored in Firestore. S9 saves the chest tape value under BOTH `chest` and `bust`; with no chest value there is no bust value. `TAPE_KEYS` excludes bust and height. - E - spec-coverage.
 - I10d Confidence colours: >= 0.75 green, >= 0.5 amber, else red (NaN = red). `alwaysLowConfidence` keys (wrist, footLength) have confidence <= 0.7. - E, C - spec-coverage, pipeline-e2e.
 - I10e k defaults to 1.0: null factors or a missing key means measurements equal raw. Factors apply per bodyType to `measurements` only; `rawMeasurements` stay uncorrected. `computeCorrectionFactors` uses tape/RAW (not corrected values), circumferences only, and needs >= minScans samples. - C, A - pipeline-e2e, spec-coverage.
 - I10f Uncertainty > 0 for every measured key when the device has no `distortionK1` (distortion term), even if frames agree exactly. - C - pipeline-e2e.
@@ -158,6 +160,13 @@ Record the result of each run in the regression log (d). "Pass" means every expe
 | 2026-10-10 | G9 pipeline E2E | 1/7 pass | C | Scene self-check passes; 6 wait on runPipeline. |
 | 2026-10-10 | G10 config files | 33/33 pass | B, E, orch. | Front 35mm-eq lower bound relaxed to 15 mm (Pixel 9 Pro is 17.2 mm). |
 | 2026-10-10 | G3 build / G4 bundle | NOT RUN | - | Blocked by G1; bundle tests skip without dist/. |
+| 2026-10-10 (cycle 2) | G1 tsc --noEmit | PASS (0 errors) | all | Re-run at the end after E/C file changes: still 0. |
+| 2026-10-10 (cycle 2) | G2 vitest run (all) | PASS 458/458, 32 files | all | First run in this cycle: 2 pipeline-e2e failures (front distance 2.88 m; front flagged for retake). Root cause: QA scene heel Y = 2 cm vs the new floor-contact convention; scene fixed to Y = 0, side tolerance set to 5 cm. |
+| 2026-10-10 (cycle 2) | QA suite tests/qa | PASS 155/155 | all | +2 chest/bust tests (isVisibleKey, S9 tape mirror), +2 bundle tests (models shipped, precache report). |
+| 2026-10-10 (cycle 2) | G3 npm run build | PASS | - | Built in 2.5 s; Vite warns firebase chunk 635 kB (> 500 kB); 45 precache entries (1.9 MB). |
+| 2026-10-10 (cycle 2) | G4 bundle | PASS 9/9 | E, F, orch. | No replay in dist; debugCapture + fflate only in the lazy chunk `debugCapture-*.js`; sw.js has the /__/ denylist; db id + email baked in; models + wasm present. WARN: debugCapture-*.js, debug-*.js and wasm/*.js loaders are in the SW precache. |
+| 2026-10-10 (cycle 2) | Smoke: vite preview :4173 (HTTPS via basicSsl) | PASS | - | / 200 text/html; /sw.js 200 text/javascript; /manifest.webmanifest 200 application/manifest+json; /device-profiles.json 200 application/json (9 KB); /wasm/vision_wasm_internal.wasm 200 application/wasm; HEAD /models/pose_landmarker_lite.task 200, 5.78 MB, NO content-type (nginx will send application/octet-stream - fine). /__/auth/handler returns index.html in preview (expected: no proxy; nginx handles it in production, manual test M-M0a). |
+| 2026-10-10 (cycle 2) | dist size | 89 MB | orch. | public/ is copied into dist: models 51 MB (3 files), wasm 38 MB (6 files incl. nosimd), assets 974 KB. Models are served in production only if `npm ci` inside Docker downloads them (setup-assets only warns on failure). |
 
 ---------------------------------------------------------------------------
 
@@ -170,7 +179,7 @@ Record the result of each run in the regression log (d). "Pass" means every expe
 - iOS gravity sign: `normalizeGravity` flips when gy < 0. This must be verified on a real iPhone (M-B3), since a wrong flip silently inverts roll.
 - Roll sign is `atan2(-gx, gy)`. QA checks only |roll| and antisymmetry, so the level gauge direction must be checked manually (M-B3).
 
-**C geometry-measure** - geometry passes. Outstanding: `src/measure/levels.ts`, `src/measure/compute.ts`, `src/pipeline/runPipeline.ts` (these also block tsc for E and F). When landing them, run `npx vitest run tests/qa/pipeline-e2e.test.ts`, which checks:
+**C geometry-measure** - [cycle 2: ALL PASS, including pipeline-e2e on the synthetic scene.] Cycle-1 note kept for history: outstanding were `src/measure/levels.ts`, `src/measure/compute.ts`, `src/pipeline/runPipeline.ts`. pipeline-e2e checks:
 - runPipeline accepts `ImageData` frames + an injected `vision` in Node (no ImageBitmap/canvas needed).
 - segmentPerson receives NORMALIZED landmarks.
 - `diagnostics.distanceM` is in metres.
@@ -186,11 +195,17 @@ Notes:
 
 **D vision** - all QA checks pass (regionCrops returns pixel boxes from normalized landmarks). Manual follow-ups: M-D1 (back-view detection), M-D2 (blur threshold calibration), M-D3 (wrist framing).
 
-**E ui-flow** - all QA checks pass except processing.ts, which is blocked by C. Points for the orchestrator:
+**E ui-flow** - [cycle 2: ALL PASS; chest/bust duplication resolved per orchestrator decision, invariant I10c2.] Cycle-1 notes:
 - MEASUREMENT_SPECS contains both `chest` (Tops, labelled by body type) and `bust` (Dresses, fixed label "Bust"). A female user sees two "Bust" rows; a male user sees "Chest" plus "Bust". Decide whether the Dresses `bust` row should be hidden for male users, or whether the chest row should keep the rule and `bust` be dropped from Results.
 - `src/ui/debug.ts` dynamically imports the dev chunk on any host with `?debug=1` (allowed: lazy chunk, and `debugEnabled()` returns false on production hosts so no UI shows). M-F2 verifies.
 
 **F dev-tools** - all QA checks pass. The bundle check fingerprints F's error strings ("Not a debug capture zip", ...) and replay text ("Replay (dev only)", ...). If they are renamed, tell QA.
+
+### Open decisions for the orchestrator (cycle 2)
+1. **Models may silently be missing in production.** `scripts/setup-assets.mjs` only warns when a download fails, and .dockerignore excludes public/models, so the Cloud Build image depends on network during `npm ci`. Suggestion: an `npm run verify-assets` step in the Dockerfile after `npm run build` that fails if dist/models/*.task|*.tflite or dist/wasm/*.wasm are missing. The bundle test checks this locally only.
+2. **SW precaches dev-only code.** `debugCapture-*.js` (fflate) and `debug-*.js` are downloaded by every production client. They are not executed, so this is not a rule violation. Suggestion (vite.config.ts): `workbox.globIgnores: ["**/debugCapture-*.js", "**/debug-*.js", "wasm/**"]` (the wasm loaders are already runtime-cached CacheFirst). Each manifest icon is also listed twice in the precache; harmless.
+3. **Firebase chunk is 635 kB** (Vite > 500 kB warning). Acceptable for v1; it is lazily imported, not in the entry graph.
+4. **Side-view foot offset.** C assumes the near-foot edge is 0.025 H (about 4.4 cm) in front of the body plane, which is half a foot width. With the feet together the outer edge is closer to one foot width (about 9-10 cm) from the midline. Impact: about 2% on side-view distance, which affects only `scaleAgreementPct`, not measurements (they are height-scaled). Validate on device or replay (M-M2b).
 
 ### Checks re-run every cycle
 G1 tsc, G2 all tests, G3 build, G4 bundle; within G2: contract, conventions, spec-coverage, invariants, pipeline-e2e, config-files. Any new export or contract change must be added to `tests/qa/contract.test.ts` and this file.

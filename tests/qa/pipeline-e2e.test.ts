@@ -114,7 +114,12 @@ describe("[C geometry-measure] runPipeline on a synthetic scene", () => {
     expect(calls.pose, "heavy pose on every kept frame").toBe(3 * FRAMES);
     expect(calls.seg, "segmentation was called").toBeGreaterThan(0);
     expect(calls.segLandmarksNormalized, "segmentPerson must receive NORMALIZED landmarks (D contract)").toBe(true);
-    for (const v of ["front", "side", "back"] as const) near(result.diagnostics.distanceM[v], D / 100, 0.05, `distanceM.${v} (metres)`);
+    // Feet convention (orchestrator): heel/foot-index are floor contacts; the feet row comes
+    // from the mask bottom. Side view: C assumes the near foot's outer edge is 0.025*H nearer
+    // than the body plane; QA's flat scene has no foot depth, so allow +/-5 cm there.
+    near(result.diagnostics.distanceM.front, D / 100, 0.02, "distanceM.front (metres)");
+    near(result.diagnostics.distanceM.back, D / 100, 0.02, "distanceM.back (metres)");
+    near(result.diagnostics.distanceM.side, D / 100, 0.05, "distanceM.side (metres)");
     expect(result.diagnostics.scaleAgreementPct).toBeLessThan(2);
     expect(result.retakeViews).toEqual([]);
     expect(result.solvedFocalLengthPx, "spec focal is exact; height solve must not override (< 5%)").toBeUndefined();

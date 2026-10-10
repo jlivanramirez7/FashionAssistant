@@ -101,6 +101,28 @@ describe.skipIf(!HAS_DIST)("production bundle (dist/)", () => {
     expect(all, "emulator wiring must not ship").not.toMatch(/connectFirestoreEmulator\s*\(|localhost:8081/);
   });
 
+  it("MediaPipe models + wasm ship in dist (setup-assets only warns on download failure)", () => {
+    const need: [string, number][] = [
+      ["dist/models/pose_landmarker_lite.task", 1e6],
+      ["dist/models/pose_landmarker_heavy.task", 1e6],
+      ["dist/models/selfie_multiclass_256x256.tflite", 1e6],
+      ["dist/wasm/vision_wasm_internal.wasm", 1e6],
+      ["dist/wasm/vision_wasm_internal.js", 1e4],
+    ];
+    const bad = need.filter(([p, min]) => !existsSync(repoPath(p)) || statSync(repoPath(p)).size < min).map(([p]) => p);
+    expect(bad, `missing/truncated (models must be served in production): ${bad.join(", ")}`).toEqual([]);
+  });
+
+  it("service worker precache: report dev-only chunks and wasm loaders (warning only)", () => {
+    const sw = read("dist/sw.js");
+    const urls = [...sw.matchAll(/url\s*:\s*"([^"]+)"/g)].map((m) => m[1]);
+    const dev = urls.filter((u) => /debugCapture|\/debug-/.test(u));
+    const wasm = urls.filter((u) => u.startsWith("wasm/"));
+    if (dev.length) console.warn(`[QA bundle] dev-only chunks precached for every user: ${dev.join(", ")}`);
+    if (wasm.length) console.warn(`[QA bundle] wasm loaders precached: ${wasm.join(", ")}`);
+    expect(urls).toContain("index.html");
+  });
+
   it("entry JS stays reasonably small (MediaPipe should be lazy-loaded)", () => {
     const size = staticGraph().reduce((n, f) => n + statSync(repoPath(f)).size, 0);
     console.info(`[QA bundle] entry static graph: ${(size / 1024).toFixed(0)} KiB`);

@@ -214,14 +214,12 @@ export class Body {
     if (side) {
       const l = this.legHalf(y, true);
       if (l !== null && Math.abs(c) <= l) return true;
-      if (y <= 6 * this.s && c >= -5 * this.s && c <= 20 * this.s) return true;
       if (this.inArmSide(c, y)) return true;
       return false;
     }
     const lx = this.legX(y);
     const l = this.legHalf(y, false);
     if (l !== null && Math.abs(Math.abs(c) - lx) <= l) return true;
-    if (y <= 6 * this.s && Math.abs(Math.abs(c) - this.legX(0)) <= 4.5 * this.s) return true;
     return this.inArmFront(Math.abs(c), y);
   }
 
@@ -289,6 +287,7 @@ export function renderMask(body: Body, cam: SynthCamera, view: ViewName, D: numb
   // head ellipsoid semi-axes in world X / Z for this view
   const aX = view === "side" ? hd.depth : hd.lat;
   const aZ = view === "side" ? hd.lat : hd.depth;
+  const boxes = footBoxes(body, view, D);
   for (let r = 0; r < Hh; r++) {
     const yn = (r + 0.5 - Hh / 2) / f;
     const dy = sp - yn * cp;
@@ -309,10 +308,54 @@ export function renderMask(body: Body, cam: SynthCamera, view: ViewName, D: numb
         const C = (ox / aX) ** 2 + (oy / hd.vert) ** 2 + (oz / aZ) ** 2 - 1;
         inside = B * B - 4 * A * C >= 0;
       }
+      if (!inside) for (const b of boxes) if (rayHitsBox(h, xn, dy, dz, b)) inside = true;
       if (inside) data[r * W + i] = 1;
     }
   }
   return { width: W, height: Hh, data };
+}
+
+type Box = { x0: number; x1: number; y0: number; y1: number; z0: number; z1: number };
+
+/** Feet as true 3D boxes on the floor (heel f = -5, toe f = +20, ankle above f = 0). */
+function footBoxes(body: Body, view: ViewName, D: number): Box[] {
+  const s = body.s;
+  const out: Box[] = [];
+  for (const sgn of [1, -1]) {
+    const xc = sgn * body.legX(0);
+    const xs = [xc - 4.5 * s, xc + 4.5 * s];
+    const fs = [-5 * s, 20 * s];
+    const w = (x: number, f: number) => toWorld(view, x, f, D);
+    const pts = [w(xs[0], fs[0]), w(xs[0], fs[1]), w(xs[1], fs[0]), w(xs[1], fs[1])];
+    out.push({
+      x0: Math.min(...pts.map((p) => p[0])), x1: Math.max(...pts.map((p) => p[0])),
+      y0: 0, y1: 6 * s,
+      z0: Math.min(...pts.map((p) => p[1])), z1: Math.max(...pts.map((p) => p[1])),
+    });
+  }
+  return out;
+}
+
+function rayHitsBox(h: number, dx: number, dy: number, dz: number, b: Box): boolean {
+  let t0 = 0;
+  let t1 = Infinity;
+  const o = [0, h, 0];
+  const d = [dx, dy, dz];
+  const lo = [b.x0, b.y0, b.z0];
+  const hi = [b.x1, b.y1, b.z1];
+  for (let k = 0; k < 3; k++) {
+    if (Math.abs(d[k]) < 1e-12) {
+      if (o[k] < lo[k] || o[k] > hi[k]) return false;
+      continue;
+    }
+    let a = (lo[k] - o[k]) / d[k];
+    let c = (hi[k] - o[k]) / d[k];
+    if (a > c) [a, c] = [c, a];
+    t0 = Math.max(t0, a);
+    t1 = Math.min(t1, c);
+    if (t0 > t1) return false;
+  }
+  return true;
 }
 
 /** Deterministic PRNG (mulberry32). */

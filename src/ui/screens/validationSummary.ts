@@ -7,7 +7,7 @@ import type { BodyType, ScanDoc } from "../../types";
 import { formatSmallLength } from "../../units";
 import { errorMessage, type AppContext } from "../context";
 import { button, h, linkButton, screen, setChildren } from "../dom";
-import { measurementLabel } from "../format";
+import { isVisibleKey, measurementLabel } from "../format";
 import { createUnitToggle } from "../parts/unitToggle";
 
 /** PURE: how many k values were computed, per body type. */
@@ -67,7 +67,7 @@ export function render(root: HTMLElement, ctx: AppContext): () => void {
     if (!scans) return;
     const n = tapeScanCount(scans);
     countEl.textContent = `${n} scan${n === 1 ? "" : "s"} with tape values`;
-    const rows = validationStats(scans).filter((r) => r.n > 0);
+    const rows = validationStats(scans).filter((r) => r.n > 0 && isVisibleKey(r.key));
     recompute.disabled = n === 0;
     if (rows.length === 0) {
       setChildren(table, h("p", null, 'No tape measurements yet. Open a scan and tap "Add tape measurements".'));

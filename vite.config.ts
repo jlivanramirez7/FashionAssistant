@@ -26,6 +26,9 @@ export default defineConfig(({ command }) => ({
       },
       workbox: {
         globPatterns: ["**/*.{js,css,html,json,png,svg}"],
+        // Dev-only debug chunks never run in production; wasm loaders
+        // are cached on first use by the runtime rule below.
+        globIgnores: ["**/debugCapture-*.js", "**/debug-*.js", "**/wasm/**"],
         navigateFallbackDenylist: [/^\/__\//],
         runtimeCaching: [
           {

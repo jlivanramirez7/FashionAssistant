@@ -6,7 +6,7 @@ import { getScan } from "../../data/scans";
 import type { ScanDoc } from "../../types";
 import { closeFrames, errorMessage, type AppContext } from "../context";
 import { button, h, screen, setChildren } from "../dom";
-import { copyAllText, formatDate, groupMeasurements, retakeViewsFor } from "../format";
+import { copyAllText, formatDate, groupMeasurements, retakeViewsFor, visibleMeasurements } from "../format";
 import { startFromTap } from "../hardware";
 import { createMeasurementRow } from "../parts/measurementRow";
 import { createUnitToggle } from "../parts/unitToggle";
@@ -46,7 +46,8 @@ export function render(root: HTMLElement, ctx: AppContext): () => void {
 
   function draw(sc: ScanDoc): void {
     dateEl.textContent = `${formatDate(sc.createdAt)}${sc.subjectLabel && sc.subjectLabel !== "me" ? ` - ${sc.subjectLabel}` : ""}`;
-    const groups = groupMeasurements(sc.measurements);
+    const shown = visibleMeasurements(sc.measurements);
+    const groups = groupMeasurements(shown);
     if (groups.length === 0) {
       setChildren(list, h("p", null, "No measurements were found in this scan."));
     } else {
@@ -55,7 +56,7 @@ export function render(root: HTMLElement, ctx: AppContext): () => void {
         groups.map((g) =>
           h("div", { class: "group" },
             h("h2", null, g.title),
-            g.keys.map((k) => createMeasurementRow({ key: k, value: sc.measurements[k]!, bodyType: sc.bodyType, units: ctx.units })),
+            g.keys.map((k) => createMeasurementRow({ key: k, value: shown[k]!, bodyType: sc.bodyType, units: ctx.units })),
           ),
         ),
         h("p", { class: "legend" },

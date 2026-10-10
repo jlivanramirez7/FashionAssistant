@@ -43,6 +43,27 @@ export function measurementLabel(key: MeasurementKey, bodyType: BodyType): strin
   return key === "chest" ? chestLabel(bodyType) : specFor(key).label;
 }
 
+// ---------------------------------------------------------------- visible keys
+
+/**
+ * Chest and bust are the same measurement (section 7). The UI shows ONE row
+ * (key "chest", in Tops, labelled by bodyType) and hides "bust" everywhere;
+ * "bust" stays stored in Firestore.
+ */
+export const HIDDEN_KEYS: readonly MeasurementKey[] = ["bust"];
+
+export function isVisibleKey(key: MeasurementKey): boolean {
+  return !HIDDEN_KEYS.includes(key);
+}
+
+/** Copy of `m` for display: chest falls back to bust, bust removed. */
+export function visibleMeasurements<T>(m: Partial<Record<MeasurementKey, T>> | undefined): Partial<Record<MeasurementKey, T>> {
+  const out: Partial<Record<MeasurementKey, T>> = { ...(m ?? {}) };
+  if (out.chest === undefined && out.bust !== undefined) out.chest = out.bust;
+  delete out.bust;
+  return out;
+}
+
 export const GROUP_ORDER: readonly MeasurementGroup[] = ["tops", "bottoms", "dresses", "shoes", "general"];
 
 export const GROUP_TITLES: Record<MeasurementGroup, string> = {
@@ -58,7 +79,7 @@ export function groupMeasurements(m: Measurements): { group: MeasurementGroup; t
   return GROUP_ORDER.map((group) => ({
     group,
     title: GROUP_TITLES[group],
-    keys: MEASUREMENT_SPECS.filter((s) => s.group === group && m[s.key] !== undefined).map((s) => s.key),
+    keys: MEASUREMENT_SPECS.filter((s) => s.group === group && isVisibleKey(s.key) && m[s.key] !== undefined).map((s) => s.key),
   })).filter((g) => g.keys.length > 0);
 }
 
@@ -92,7 +113,8 @@ export const KEY_VIEWS: Record<MeasurementKey, ViewName[]> = {
 };
 
 /** Keys shown amber/red that a retake could improve (alwaysLowConfidence keys and height excluded). */
-export function lowConfidenceKeys(m: Measurements): MeasurementKey[] {
+export function lowConfidenceKeys(measurements: Measurements): MeasurementKey[] {
+  const m = visibleMeasurements(measurements);
   return MEASUREMENT_SPECS.filter((s) => {
     const v = m[s.key];
     if (!v || s.alwaysLowConfidence || s.targetCm === null) return false;
@@ -173,10 +195,11 @@ export function formatDate(ms: number): string {
 /** Plain-text list for "Copy all" (section 6 S7). */
 export function copyAllText(scan: Pick<ScanDoc, "measurements" | "bodyType" | "createdAt">, units: Units): string {
   const lines = [`My measurements (${formatDate(scan.createdAt)})`];
-  for (const g of groupMeasurements(scan.measurements)) {
+  const m = visibleMeasurements(scan.measurements);
+  for (const g of groupMeasurements(m)) {
     lines.push("", g.title);
     for (const k of g.keys) {
-      const v = scan.measurements[k]!;
+      const v = m[k]!;
       lines.push(`${measurementLabel(k, scan.bodyType)}: ${formatLength(v.valueCm, units)} (${formatPlusMinus(v.uncertaintyCm, units)})`);
     }
   }
@@ -186,9 +209,15 @@ export function copyAllText(scan: Pick<ScanDoc, "measurements" | "bodyType" | "c
 /** Short summary for Home: Chest / Waist / Inseam when present. */
 export function homeSummary(scan: Pick<ScanDoc, "measurements" | "bodyType">, units: Units): string[] {
   const keys: MeasurementKey[] = ["chest", "naturalWaist", "inseam"];
+  const m = visibleMeasurements(scan.measurements);
   return keys
-    .filter((k) => scan.measurements[k])
-    .map((k) => `${measurementLabel(k, scan.bodyType)} ${formatLength(scan.measurements[k]!.valueCm, units)}`);
+    .filter((k) => m[k])
+    .map((k) => `${measurementLabel(k, scan.bodyType)} ${formatLength(m[k]!.valueCm, units)}`);
+}
+
+/** Tape value shown in a S9 field (chest falls back to a stored bust value). */
+export function tapeForField(tape: Partial<Record<MeasurementKey, number>> | undefined, key: MeasurementKey): number | undefined {
+  return visibleMeasurements(tape)[key];
 }
 
 // ---------------------------------------------------------------- placement text
@@ -207,7 +236,9 @@ export function placementHint(o: { tiltDeg: number; rollDeg: number } | null): {
 // ---------------------------------------------------------------- validation (S9)
 
 /** Keys with a tape field on S9 (every measurement except the height input). */
-export const TAPE_KEYS: readonly MeasurementKey[] = MEASUREMENT_SPECS.filter((s) => s.key !== "height").map((s) => s.key);
+export const TAPE_KEYS: readonly MeasurementKey[] = MEASUREMENT_SPECS.filter(
+  (s) => s.key !== "height" && isVisibleKey(s.key),
+).map((s) => s.key);
 
 /** Typed tape fields (in `units`) -> tapeMeasurements in cm; blank/invalid fields dropped. */
 export function buildTapeMeasurements(
@@ -220,5 +251,8 @@ export function buildTapeMeasurements(
     const cm = parseLength(v, units);
     if (cm !== null) out[k] = Math.round(cm * 100) / 100;
   }
+  // The single chest / bust row is saved under both keys.
+  if (out.chest !== undefined) out.bust = out.chest;
+  else delete out.bust;
   return out;
 }

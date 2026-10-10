@@ -22,11 +22,28 @@ export const STAGE_TEXT: Record<ProgressStage, string> = {
   measure: "Calculating",
 };
 
+/**
+ * Share of the bar per stage. runPipeline reports onProgress(stage, 0..1)
+ * PER STAGE in this order; heavy pose and segmentation run per frame and
+ * take almost all the time, the per-view planes and the measuring are quick.
+ */
+export const STAGE_WEIGHTS: Record<ProgressStage, number> = {
+  pose: 0.45,
+  outline: 0.45,
+  front: 0.02,
+  side: 0.02,
+  back: 0.02,
+  measure: 0.04,
+};
+
 /** PURE: overall progress 0..1 from (stage, fraction within stage). */
 export function overallProgress(stage: ProgressStage, fraction: number): number {
-  const i = Math.max(0, STAGE_ORDER.indexOf(stage));
+  const i = STAGE_ORDER.indexOf(stage);
+  if (i < 0) return 0;
   const f = Math.min(1, Math.max(0, Number.isFinite(fraction) ? fraction : 0));
-  return (i + f) / STAGE_ORDER.length;
+  let before = 0;
+  for (let k = 0; k < i; k++) before += STAGE_WEIGHTS[STAGE_ORDER[k]];
+  return Math.min(1, before + f * STAGE_WEIGHTS[stage]);
 }
 
 /** PURE: split pipeline retake requests into ones to retake now and ones over the limit. */

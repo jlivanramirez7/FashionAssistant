@@ -1,0 +1,1543 @@
+FASHION ASSISTANT - DESIGN DOC
+A phone web app that measures your body for clothing, hands-free.
+Author: Ivan Ramirez
+Last updated: 2026-10-10
+Status: Draft - iterate with feedback
+
+======================================================================
+1. OVERVIEW
+======================================================================
+Fashion Assistant is a phone web app that measures a person for
+clothing hands-free: the phone rests on the floor with its screen and
+front camera facing the room, the user stands back and follows spoken
+prompts, and the app reports body measurements with an uncertainty
+for each.
+
+Goal:
+  A person alone at home gets a full set of clothing measurements in
+  under 3 minutes, without a tape measure or a helper.
+
+Users:
+  One person measuring themselves on their own phone, any recent
+  iPhone or Android, in a normal room. v1 is private: only the Google
+  account jlivanramirez7@gmail.com can sign in (section 10).
+
+Success criteria (v1):
+  - Lengths (height, shoulder width, arm, inseam) within +/-1.5 cm of
+    a tape measure for 80% of test users
+  - Circumferences (chest, waist, hips) within +/-3 cm of a tape
+    measure for 80% of test users
+  - Accuracy is checked against tape measurements entered in
+    validation mode (screen S9, section 6)
+  - A full scan finishes in under 3 minutes, and fewer than 1 in 5
+    scans need a retake
+  - No images leave the device
+
+Non-goals (v1):
+  - Native apps
+  - LiDAR or depth sensors
+  - Measuring someone else. The one exception is validation scans of
+    test people done on the owner's signed-in phone, labelled with
+    subjectLabel (their own height is entered for that scan)
+  - Virtual garment fitting
+  - Size recommendation (moved to v2, with brand size charts and
+    fit-ease rules); v1 shows measurements only
+
+Key constraint: a single phone camera cannot tell how big something
+is on its own. Most of this design is about getting a reliable
+real-world scale, then turning flat 2D images into 3D measurements.
+
+======================================================================
+2. PLATFORM CONSTRAINTS
+======================================================================
+A mobile browser gives us the camera feed and the phone's tilt, but
+not the lens focal length, the phone's dimensions or any depth data,
+so real-world scale has to come from somewhere else (section 3).
+
+Need                  | Browser support              | Notes
+----------------------|------------------------------|------------------------------
+Camera feed           | Yes: getUserMedia            | HTTPS only; FRONT (selfie)
+                      |                              | camera via facingMode "user"
+                      |                              | so the screen faces the user;
+                      |                              | preview mirrored, frames used
+                      |                              | unmirrored; stream stops when
+                      |                              | page goes to background
+Camera resolution     | Yes: getUserMedia            | Request 1080x1920 portrait
+                      | constraints                  | (ideal), fall back to
+                      |                              | 720x1280; record the actual
+                      |                              | track settings
+Phone tilt and roll   | Yes: DeviceOrientationEvent/ | iOS requires
+                      | DeviceMotionEvent            | DeviceOrientationEvent.
+                      |                              | requestPermission() from a tap
+Phone model           | Android Chrome: yes, via     | Feeds the device profile
+                      | userAgentData high-entropy   | (section 4). iOS: inferred
+                      | "model". iOS Safari: only    | from screen size + pixel
+                      | "iPhone" in the user agent   | ratio + iOS version
+Focal length / FOV    | No (not in getSettings())    | From the device profile's
+                      |                              | front-camera spec, refined
+                      |                              | by the height solve
+Phone dimensions      | No                           | From the device profile:
+                      |                              | lens offset L_lens
+                      |                              | (section 4)
+Camera track details  | Yes: getSettings() /         | Actual width, height,
+                      | getCapabilities()            | frame rate, facing mode
+Gravity vector        | Yes: DeviceMotionEvent       | Tilt theta and roll,
+                      | accelerationIncludingGravity | averaged during capture
+Depth / LiDAR         | iOS: no. Android: partial    | Not used in v1
+                      | via WebXR                    |
+Body pose and outline | Yes: MediaPipe Pose          | Runs on the phone via
+                      | Landmarker + Image Segmenter | WASM/WebGPU
+Spoken prompts        | Yes: speechSynthesis         | iOS needs a tap before the
+                      |                              | first utterance
+
+All permissions (camera, motion, audio) are unlocked together on a
+single Start tap, after the Setup form is filled in (section 5).
+
+======================================================================
+3. SCALE STRATEGY
+======================================================================
+The user's typed height is the primary scale source: it is the one
+number most people know, and it is the only input we ask for. Every
+other number the geometry needs (phone model, lens position, lens
+height above the floor, focal length, tilt, camera resolution) is
+pulled automatically from the device (device profile, section 4).
+Floor geometry and an optional paper reference cross-check the
+height and calibrate the camera.
+
+Source              | How it gives scale             | Precision      | Role
+--------------------|--------------------------------|----------------|-------------
+User height (typed) | Head-to-heel distance in image | ~ +/-1 cm      | Primary
+                    | equals known height            | (self-reported)|
+Floor geometry      | Lens height (from L_lens and   | Noisy: camera  | Cross-check;
+                    | tilt, section 4); the pixel    | sees feet at a | flags bad
+                    | row where feet touch the floor | shallow angle  | captures
+                    | gives distance to user         |                |
+A4/Letter paper     | Known-size rectangle at the    | ~ +/-0.5 cm    | Optional;
+on the floor        | user's feet                    |                | improves
+                    |                                |                | focal length,
+                    |                                |                | L_lens, k1
+
+Because every measurement scales from height, the Setup screen shows
+the tip: "Measure your height against a wall once - don't guess"
+(people often round up 1-2 cm).
+
+When the sources disagree by more than 2%, the app asks the user to
+retake the scan or confirm their height.
+
+======================================================================
+4. CAMERA GEOMETRY
+======================================================================
+With lens height h and camera pitch phi known, every image point can
+be converted into real-world coordinates on a vertical plane through
+the user. This also removes the perspective distortion of looking up
+from the floor ("giant legs, tiny head").
+
+Side view (not to scale). The phone leans back against a wall or box
+with its bottom edge on the floor; the screen and front lens face the
+user, with the lens near the top of the phone:
+
+  wall or box
+     |
+     |   o <- front lens (screen faces the user)
+     |   |\ `-._   optical axis, raised phi above level
+     |   | \     `-._
+     |   |  \  phone   `-._                       O  head
+     | h |   \ (L_lens)     `-._                 /|\
+     |   |    \                                   |
+     |   |     \ theta                           / \
+  ---+---+------*------------ floor -------------+------
+         <------------------ d ----------------->  feet
+                bottom edge
+
+Device profile (auto-detected, no user input):
+  On the Start tap the app builds a device profile and feeds it into
+  every calculation below. Nothing here is typed by the user.
+
+  1. Phone model
+     - Android Chrome: navigator.userAgentData
+       .getHighEntropyValues(["model", "platformVersion"]) returns
+       the exact model (e.g. "Pixel 8").
+     - iOS Safari: the user agent only says "iPhone", so the model
+       family is matched from screen.width x screen.height,
+       devicePixelRatio and the iOS version. Phones in one family
+       (same screen) have near-identical front-lens positions, so
+       the family is enough.
+     - If nothing matches, use the generic profile (below) and mark
+       the scan lower confidence.
+  2. Spec lookup: public/device-profiles.json, keyed by model or
+     family, holds per phone:
+       phoneHeightMm        body height
+       frontLensFromTopMm   front lens centre to the top edge
+       front35mmEqMm        front camera 35 mm-equivalent focal
+                            length
+       frontSensorAspect    e.g. "4:3"
+     L_lens = phoneHeightMm - frontLensFromTopMm (stored as
+     lensOffsetCm). Generic profile: L_lens 14 cm, 35 mm-eq 26 mm.
+  3. Camera track: getSettings() gives the actual video width,
+     height, frame rate and facing mode; getCapabilities() gives the
+     maximum resolution.
+  4. Focal length in pixels from the spec, for the actual video
+     size (diagonal definition of 35 mm-equivalent, 43.27 mm):
+       f_px = front35mmEqMm * sqrt(W^2 + H^2) / 43.27
+     This assumes the video uses the full sensor width; if the video
+     mode crops the sensor the height solve (below) corrects it.
+  5. Sensors: DeviceMotionEvent accelerationIncludingGravity, sampled
+     at ~60 Hz and averaged over each capture hold, gives tilt theta
+     and roll (DeviceOrientationEvent beta/gamma as a fallback).
+  6. Derived per scan: lens height h, pitch phi, f_px, and the
+     distance d per view (formulas below).
+
+  The profile is saved per device (users/{uid}/devices/{deviceId},
+  section 11) with where each value came from (modelSource:
+  "ua-client-hints" | "screen-match" | "generic"). Measured values
+  from the height solve and the paper calibration override the spec
+  values over time.
+
+Angles:
+  theta = phone tilt from flat, from the accelerometer gravity vector.
+          Allowed range 60-85 deg.
+  phi   = 90 deg - theta = camera pitch, the elevation of the optical
+          axis above horizontal (5-30 deg).
+
+Phone placement check:
+  The gravity vector must show roll within +/-3 deg and tilt theta
+  between 60 and 85 deg from flat before capture starts.
+
+Lens height:
+  h = L_lens * sin(theta)
+  This is the camera's height above the floor. L_lens is the
+  distance along the phone from its bottom edge to the front lens
+  (~13-15 cm), taken from the device profile (above); theta comes
+  from the gravity vector. Example: L_lens 14.0 cm, theta 75 deg ->
+  h = 13.5 cm. A thick case adds a few mm; the paper calibration
+  absorbs it. Stored per device as lensOffsetCm.
+
+Distance from the feet:
+  For image row v_feet (v increases downward), principal point c_y
+  and focal length f_y (px):
+
+    alpha = atan((v_feet - c_y) / f_y) - phi
+    d     = h / tan(alpha)
+
+  d is recomputed separately for each view (front, side, back) from
+  that view's feet row, because the user moves slightly when turning.
+
+Perspective correction:
+  Each landmark's pixel ray is rotated by the pitch phi into a level
+  frame and intersected with the vertical plane at that view's
+  distance d, then scaled by height. That gives metric (x, y) for
+  every landmark, so lengths are in centimetres, not pixels. Levels
+  are matched across views by height above the floor (cm).
+
+Lens distortion:
+  Front cameras are often wide-angle. Model one radial coefficient
+  k1, estimated during the optional paper calibration and stored per
+  device (distortionK1). Without it: require the whole body inside
+  the central ~80% of the frame and add the expected distortion error
+  to each measurement's uncertainty.
+
+Focal length:
+  Browsers don't expose it directly. The starting value comes from
+  the device profile (f_px from the 35 mm-equivalent spec). Each scan
+  then checks it: with user height H and pitch phi, the head ray and
+  feet ray must both hit the same vertical plane; solve that
+  constraint for f_y. If the solved value differs from the spec value
+  by more than 5%, the solved value wins (the video mode is probably
+  cropped). Save the result per device and refine it across scans or
+  with the paper reference.
+
+======================================================================
+5. CAPTURE FLOW (state machine with voice prompts)
+======================================================================
+The user will be 2-3 m from the screen, so every instruction is
+spoken (speechSynthesis) and shown in large text. Capture happens
+automatically when the pose holds still, so the user never has to
+walk back to tap anything. The preview is mirrored for the user, so
+turn prompts never say "turn right/left".
+
+Live guidance runs pose_landmarker_lite on every frame (no
+segmentation). On capture, ~10 full-resolution frames per step are
+kept in memory; heavy processing waits until all steps are done.
+
+  1. Setup (S3): enter height (required) and body type (optional:
+     male / female / unspecified, stored as bodyType). bodyType
+     labels chest vs bust on Results and picks per-body-type
+     correction factors. Tip: "Measure your height against a wall
+     once - don't guess". Checklist: fitted clothes, hair tied up,
+     plain wall, good light.
+  2. Start tap: grants camera and motion permission and unlocks
+     voice in one gesture, then silently builds the device profile
+     (phone model, lens offset, focal length, camera resolution;
+     section 4). No questions are asked.
+  3. Place the phone: lean it against a wall or box on the floor,
+     screen and front camera facing the room. A live level gauge
+     turns green when tilt and roll are in range.
+  4. Position the user: "Step back... stop." Wait until the whole
+     body is in frame and feet are visible on the floor (ankles and
+     nose landmarks in frame, body ~70% of frame height, inside the
+     central ~80% of the frame).
+  5. Step 1 of 3 - Front A-pose: arms ~45 deg out from the body,
+     palms forward, feet hip-width apart. Hold ~1 s (~10 frames).
+     Sleeve and shirt-sleeve come from this pose (arm segment
+     lengths do not depend on the arm angle).
+  6. Step 2 of 3 - Side: "Turn so your right shoulder faces the
+     phone." Arms relaxed at the sides. Hold ~1 s.
+  7. Step 3 of 3 - Back A-pose: "Turn so your back faces the
+     phone." Arms ~45 deg out. Hold ~1 s. Required (shoulder width,
+     back length).
+  8. Processing (S6): pose_landmarker_heavy + crop segmentation run
+     on the kept frames (section 7), ~5-15 s on a mid-range phone,
+     with a progress bar.
+  9. Quality check: confidence per measurement. Re-capture only the
+     step whose frames are blurry, partly out of frame, or whose
+     distance disagrees with the floor-geometry estimate.
+ 10. Results (S7): measurements with a +/- uncertainty each, and
+     Copy all. No size recommendation in v1 (v2).
+
+There is no T-pose step (arm span does not fit a portrait frame). An
+optional slow 360 deg spin for a better circumference fit moves to v2.
+
+The screens for each step are in section 6.
+
+======================================================================
+6. USER INTERFACE
+======================================================================
+The UI is deliberately minimal: one job per screen, one big button,
+and nothing to tap once capture starts. It walks the user through
+three things: set up the phone, record the scan, read the
+measurements.
+
+Design rules:
+  - One primary action per screen, as a large full-width button at
+    the bottom (thumb reach)
+  - The FRONT (selfie) camera is used (getUserMedia facingMode
+    "user"), so the screen faces the user standing 2-3 m away. The
+    on-screen preview is mirrored like a mirror; all computation
+    uses the unmirrored frames
+  - During capture the user is 2-3 m away: instruction text is huge
+    (at least 48 px, about 6 words max), high contrast, and every
+    instruction is also spoken as a full sentence
+  - Turn instructions never say "turn right/left" (ambiguous with a
+    mirrored preview); they name the body part that faces the
+    phone, e.g. "Turn so your right shoulder faces the phone"
+  - A coloured border around the camera view gives status from
+    across the room: red = not ready, amber = hold still,
+    green = capturing
+  - Screen stays awake during setup and capture (Screen Wake Lock
+    API); app runs full screen in portrait
+  - The camera runs as live video and frames are analysed on the
+    fly; nothing is recorded to storage or uploaded (the only
+    exception is the dev-only Debug capture, see S3)
+  - Units: inches by default with a cm toggle (saved per user)
+
+Screen flow:
+
+  [Sign in] -> [Home] -> [Setup] -> [Place phone] -> [Capture]
+                 ^                                       |
+                 |                                       v
+            [History] <------ [Results] <------ [Processing]
+                 |                |
+                 v                v
+     [Validation summary]   [S9 Validation]
+
+S1. Sign in
+  +------------------------------+
+  |                              |
+  |      Fashion Assistant       |
+  |   Measure yourself for       |
+  |   clothes with your phone    |
+  |                              |
+  |  [   Sign in with Google   ] |
+  +------------------------------+
+  Any account other than the allowed one sees "This app is private."
+
+S2. Home
+  +------------------------------+
+  |  Last scan: Oct 10, 2026     |
+  |  Chest 38.5"  Waist 32.0"    |
+  |  Inseam 30.5"   [View all >] |
+  |                              |
+  |  History >        Sign out   |
+  |                              |
+  |  [        New scan         ] |
+  +------------------------------+
+
+S3. Setup (one screen, short form)
+  +------------------------------+
+  |  Your height   [5] ft [10] in|
+  |  Tip: measure your height    |
+  |  against a wall once - don't |
+  |  guess                       |
+  |  Body type (optional)        |
+  |  ( ) Male ( ) Female         |
+  |  (o) Unspecified             |
+  |                              |
+  |  Before you start:           |
+  |  [x] Fitted clothes          |
+  |  [x] Hair up, shoes off      |
+  |  [x] Plain wall, good light  |
+  |  [x] ~3 m of clear floor     |
+  |                              |
+  |  [          Start          ] |
+  +------------------------------+
+  - Height is required and pre-filled from the last scan. Every
+    measurement scales from it, and people often round up 1-2 cm,
+    hence the tip. No weight is asked.
+  - Body type (bodyType: "male" | "female" | "unspecified") is
+    optional; it picks the chest vs bust label on Results and the
+    per-body-type correction factors.
+  - Order: fill the form first, THEN tap Start. That one tap grants
+    camera + motion permission and unlocks voice (iOS requires a
+    tap for all three).
+  - Dev builds only (import.meta.env.DEV, or ?debug=1 on a dev
+    host): a "Debug capture" toggle that saves the captured frames
+    + sensor readings + inputs as a local .zip download for the
+    replay harness. Never shown in production; never uploads.
+
+S4. Place the phone
+  +------------------------------+
+  |  (live front camera, full    |
+  |   screen, mirrored)          |
+  |   Lean the phone against a   |
+  |   wall, screen facing you    |
+  |                              |
+  |        .-----------.         |
+  |        |    (o)    |  <- level gauge: bubble must sit
+  |        '-----------'     in the centre; "tilt back a bit"
+  |    Tilt: OK   Roll: OK       |
+  +------------------------------+
+  The phone stands with its bottom edge on the floor, leaning back
+  60-85 deg from flat. When tilt and roll stay in range for 2 s the
+  border turns green, the phone says "Great. Now walk back until I
+  can see all of you," and the app moves on by itself.
+
+S5. Capture (no taps needed)
+  +==============================+  <- red / amber / green border
+  |  RIGHT SHOULDER TO PHONE     |  <- huge instruction text
+  |                              |
+  |         ( ghost   )          |  <- faint outline of the target
+  |         ( outline )          |     pose; live skeleton drawn
+  |         (  of pose)          |     over the mirrored preview
+  |                              |
+  |   o o o                      |  <- step dots: front, side, back
+  |   Step 2 of 3                |
+  |                  [ Cancel ]  |
+  +==============================+
+  Exactly 3 steps (on-screen text / spoken sentence):
+    1. FRONT, ARMS OUT  /  "Face the phone. Arms out about 45
+       degrees, palms forward, feet hip-width apart."
+    2. RIGHT SHOULDER TO PHONE  /  "Turn so your right shoulder
+       faces the phone. Arms relaxed at your sides."
+    3. BACK TO PHONE, ARMS OUT  /  "Turn so your back faces the
+       phone. Arms out about 45 degrees."
+  Per step: voice prompt -> wait for the pose to match the ghost
+  outline and hold still ~1 s -> chime -> ~10 full-res frames kept
+  in memory -> next. If the user is out of frame: "Step back" /
+  "Move toward the phone" etc. A failed quality check repeats only
+  that step. (No T-pose step; an optional 360-deg spin is v2.)
+
+S6. Processing
+  A progress bar and "Calculating your measurements..." with the
+  current stage (finding your outline, front, side, back). Takes
+  ~5-15 s on a mid-range phone, all on the phone.
+
+S7. Results
+  +------------------------------+
+  |  Your measurements  [in|cm]  |
+  |  Oct 10, 2026                |
+  |                              |
+  |  TOPS                        |
+  |  Chest        38.5" +/-1.0 * |
+  |  Waist        32.0" +/-1.2 * |
+  |  Neck         15.5" +/-0.8 * |
+  |  Sleeve       34.0" +/-0.6 * |
+  |  ...                         |
+  |  BOTTOMS                     |
+  |  Inseam       30.5" +/-0.8 * |
+  |  ...                         |
+  |  (* = confidence dot:        |
+  |   green / amber / red)       |
+  |                              |
+  |  [Copy all]  [Retake amber/red]
+  |  [Add tape measurements]     |
+  |  [          Done           ] |
+  +------------------------------+
+  - Grouped by garment type (see the measurement list in section 7):
+    Tops, Bottoms, Dresses & one-pieces, Shoes, General
+  - The chest row is labelled "Bust" when bodyType is "female",
+    "Chest" when "male", and "Chest / bust" when "unspecified"
+  - Measurements only: no size recommendation in v1 (moved to v2
+    with brand charts and fit-ease rules)
+  - Tapping a row shows a small body diagram with where that
+    measurement is taken, and how to check it with a tape
+  - Values with low confidence are amber/red and can be retaken
+    without redoing the whole scan
+  - "Copy all" copies a plain-text list for pasting into a shop's
+    size form or a note
+  - "Add tape measurements" opens S9 Validation for this scan
+  - Saved to Firestore automatically when the screen opens
+
+S8. History
+  +------------------------------+
+  |  History                     |
+  |  Oct 10, 2026   me        >  |
+  |  Oct 08, 2026   Person 3  >  |
+  |  Oct 02, 2026   me        >  |
+  |  ...                         |
+  |                              |
+  |  Validation summary >        |
+  |  Delete all my data          |
+  +------------------------------+
+  - Past scans by date (newest first) with their subject label; tap
+    one to open its Results screen. Swipe to delete one scan.
+  - "Validation summary" opens the summary view (below).
+  - "Delete all my data" asks for confirmation ("Delete all scans,
+    devices and settings? This cannot be undone."), then deletes
+    every document under users/{uid} (scans, devices, settings)
+    client-side, clears the local Firestore cache and the stored
+    deviceId.
+
+S9. Validation (from Results > "Add tape measurements")
+  +------------------------------+
+  |  Tape measurements  [in|cm]  |
+  |  Subject  [me            ]   |
+  |                              |
+  |               scan    tape   |
+  |  Chest        38.5"  [    ]  |
+  |  Waist        32.0"  [    ]  |
+  |  Neck         15.5"  [    ]  |
+  |  Inseam       30.5"  [    ]  |
+  |  ...                         |
+  |                              |
+  |  [          Save           ] |
+  +------------------------------+
+  - Subject label defaults to "me"; for a validation scan of a test
+    person use e.g. "Person 3" (their own height was entered in
+    Setup for that scan). Measuring other people is otherwise a
+    non-goal.
+  - One tape field per measurement key, all optional; entered in
+    in or cm, stored in cm (tapeMeasurements on the scan doc, with
+    subjectLabel).
+
+  Validation summary (from History)
+  +------------------------------+
+  |  Validation summary  [in|cm] |
+  |  12 scans with tape values   |
+  |                              |
+  |            MAE   in target   |
+  |  Chest     0.6"     83%      |
+  |  Waist     0.9"     67%      |
+  |  Inseam    0.4"     92%      |
+  |  ...                         |
+  |                              |
+  |  [ Recompute correction k  ] |
+  +------------------------------+
+  - Per measurement: mean absolute error (scan vs tape) and % of
+    scans within the accuracy target.
+  - Computes correction factors k per body level and bodyType
+    (k = mean(tape / raw ellipse estimate), from rawMeasurements)
+    and saves them to users/{uid}/settings/correctionFactors.
+
+======================================================================
+7. MEASUREMENT PIPELINE
+======================================================================
+Lengths come from scaled pose landmarks (~ +/-1-2 cm). Circumferences
+come from front and side outlines and are harder (~ +/-2-4 cm).
+
+Pipeline steps (run in the Processing step, after all 3 captures):
+  1. Capture frames: ~10 full-resolution frames per step (Front
+     A-pose, Side, Back A-pose), kept in memory only.
+  2. Heavy pose: run pose_landmarker_heavy on every captured frame.
+  3. Perspective correction per view, each with its own distance d
+     from that view's feet row, scaled by height (see "Aligning
+     views").
+  4. Region crops + segmentation + edge refinement (see
+     "Segmentation resolution").
+  5. Locate body levels (see "Body level definitions").
+  6. Measure widths (front/back) and depths (side) at each level,
+     plus landmark lengths.
+  7. Ellipse circumference at each level.
+  8. Apply correction factor k (per body level and bodyType).
+  9. Average over frames (drop outliers) and report uncertainty =
+     frame spread + lens-distortion error when the device has no
+     distortionK1 (section 4).
+
+The app reports the standard measurements that size charts ask for,
+grouped by garment type as on the Results screen (section 6).
+
+Measurement         | Used for          | Type   | Views       | Method                        | Target
+--------------------|-------------------|--------|-------------|-------------------------------|-------
+GENERAL
+Height              | All sizing        | Length | Front       | Head top to heel (the scale)  | Input
+TOPS (shirts, t-shirts, jackets, suits)
+Neck (collar)       | Dress shirts      | Circ.  | Front, side | Ellipse at neck level         | +/-2
+Chest               | All tops          | Circ.  | Front, side | Ellipse at chest/bust level   | +/-3
+Waist (natural)     | Tops, suits       | Circ.  | Front, side | Ellipse at natural waist      | +/-3
+Shoulder width      | Shirts, jackets   | Length | Back, front | Shoulder point to shoulder    | +/-1.5
+                    |                   |        |             | point, refined by back outline|
+Sleeve length       | Jackets, women's  | Length | Front       | Shoulder point > elbow >      | +/-1.5
+                    | tops              |        |             | wrist (A-pose)                |
+Shirt sleeve        | Men's dress       | Length | Front       | Centre back of neck >         | +/-2
+                    | shirts            |        |             | shoulder > elbow > wrist      |
+Back length         | Jackets, coats    | Length | Back, side  | Nape > natural waist          | +/-2
+Bicep               | Fitted shirts     | Circ.  | Front, side | Ellipse at widest upper arm   | +/-2
+Wrist               | Shirt cuffs       | Circ.  | Front, side | Ellipse at wrist (low         | +/-1.5
+                    |                   |        |             | resolution; flag amber)       |
+BOTTOMS (trousers, jeans, shorts, skirts)
+Pant waist          | Trousers, jeans   | Circ.  | Front, side | Ellipse at belt line          | +/-3
+Hips (seat)         | Trousers, skirts  | Circ.  | Front, side | Ellipse at hips/seat level    | +/-3
+Inseam              | Trousers, jeans   | Length | Front       | Crotch (outline) > ankle      | +/-2
+Outseam             | Trousers          | Length | Front, side | Belt line > ankle             | +/-2
+Rise                | Trousers, jeans   | Length | Front, side | Belt line > crotch            | +/-2
+                    |                   |        |             | (outseam - inseam)            |
+Thigh               | Jeans, trousers   | Circ.  | Front, side | Ellipse 5 cm below crotch     | +/-3
+Knee                | Slim trousers     | Circ.  | Front, side | Ellipse at knee landmark      | +/-2
+Calf                | Boots, leggings   | Circ.  | Front, side | Ellipse at widest calf        | +/-2
+DRESSES AND ONE-PIECES
+Bust                | Dresses, bras,    | Circ.  | Front, side | Ellipse at chest/bust level   | +/-3
+                    | women's tops      |        |             | (same level as chest)         |
+Underbust           | Bras, fitted      | Circ.  | Front, side | Ellipse at underbust level    | +/-3
+                    | dresses           |        |             |                               |
+Shoulder to waist   | Dresses           | Length | Front, side | Shoulder point > natural      | +/-2
+                    |                   |        |             | waist (front)                 |
+Torso length        | Swimwear,         | Length | Front, side | Shoulder > crotch > back to   | +/-3
+                    | bodysuits         |        |             | shoulder (loop estimate)      |
+SHOES
+Foot length         | Shoe size         | Length | Side        | Heel > toe landmarks          | +/-1
+                    |                   |        |             | (experimental, shoes off)     |
+(all targets in cm; displayed in inches or cm)
+
+Views are the 3 capture steps only: Front (A-pose), Side, Back
+(A-pose). There is no T-pose: sleeve and shirt sleeve come from the
+front A-pose, because arm segment lengths do not depend on the arm
+angle. Shoulder width and back length use the back view, which is
+required.
+
+Chest and bust are the same measurement at the same body level; the
+Results screen labels it by the bodyType chosen in Setup: "Bust"
+(female), "Chest" (male), "Chest / bust" (unspecified).
+
+Body level definitions:
+  All heights are in cm above the floor, in the perspective-corrected
+  metric plane. Front width and side depth are taken at the SAME
+  height.
+  - Neck: narrowest neck width between shoulder line and mouth
+    landmarks (front).
+  - Shoulder point: outline edge at shoulder-landmark height
+    (front/back).
+  - Armpit: where the arm outline separates from the torso in the
+    front A-pose.
+  - Chest/bust: greatest torso depth in the side view between armpit
+    and natural waist.
+  - Underbust: narrowest side-view depth just below the bust level
+    (upper half of bust-to-waist span).
+  - Natural waist: narrowest front torso width between chest and hip
+    landmarks.
+  - Pant waist (belt line): hip-landmark height + 40% of the distance
+    up to the natural waist (tuned with validation data).
+  - Hips/seat: greatest side-view depth between hip landmarks and
+    crotch.
+  - Crotch: top of the gap between the legs in the front A-pose mask.
+  - Thigh: 5 cm below crotch. Knee: knee landmark. Calf: widest
+    lower-leg width between knee and ankle. Bicep: widest point
+    between shoulder and elbow. Wrist: wrist landmark.
+  - Nape (back length start): base of neck in side/back view at
+    shoulder-landmark top.
+
+Segmentation resolution:
+  The segmenter outputs a 256x256 mask. Run over the whole frame, one
+  mask pixel covers ~1 cm of body, so a width or depth is off by up
+  to ~2 cm before any other error - too coarse for +/-2-3 cm
+  circumference targets. Instead:
+  - Pose landmarks -> padded crop boxes per region (neck/shoulders,
+    torso, each arm, each leg), cut from the full-resolution frame.
+  - Run ImageSegmenter (selfie_multiclass_256x256) on each crop, so a
+    ~40 cm region gets ~1.5-2 mm per mask pixel.
+  - Edge refinement: snap the mask boundary to the strongest image
+    gradient along the outline normal within +/-3 px.
+  - In M3 also evaluate PoseLandmarker's own segmentation mask
+    (outputSegmentationMasks, full-body trained) as an alternative;
+    keep whichever validates better.
+
+Aligning views:
+  Each view (front, side, back) is perspective-corrected separately
+  with its own distance d recomputed from its feet row (the user moves
+  slightly when turning) and scaled by height. Levels are matched
+  across views by height above the floor (cm), not by pixel row.
+
+Circumference method:
+  At each body level, the front outline gives width w and the side
+  outline gives depth d. Model the cross-section as an ellipse with
+  a = w/2, b = d/2, using Ramanujan's approximation:
+
+    C ~= k * pi * [ 3(a + b) - sqrt((3a + b)(a + 3b)) ]
+
+  k is a correction factor per body level and bodyType (torsos are
+  not true ellipses).
+
+Correction factors:
+  k is computed from validation data (screen S9 Validation, section
+  6): k = mean(tape / raw ellipse estimate) per body level and
+  bodyType, shown in the "Validation summary" view. Factors are
+  stored in users/{uid}/settings/correctionFactors as
+  { male: {key: k}, female: {...}, unspecified: {...}, updatedAt }.
+  Until enough validation scans exist, k defaults to 1.0. Each scan
+  keeps its uncorrected values in rawMeasurements, so k can be
+  recomputed and past scans re-corrected at any time.
+
+Noise handling:
+  Each pose is captured over ~10 frames. Average after dropping
+  outliers; keep the spread as the reported uncertainty, and add the
+  expected lens-distortion error when the device has no distortionK1.
+  Loose clothing pushes values up, so the "fitted clothing"
+  instruction matters a lot.
+
+Performance:
+  Live guidance runs pose_landmarker_lite every frame (no
+  segmentation). The heavy model and crop segmentation run only in the
+  Processing step on the ~10 kept frames per step. Processing takes
+  ~5-15 s on a mid-range phone, with a progress indicator.
+
+v2 upgrade:
+  Fit a parametric body model (SMPL-X) to the landmarks and outlines
+  from every view, then measure the fitted 3D mesh. This is how
+  commercial apps (3DLOOK, Bodygram) work. More accurate for
+  circumferences but heavier, probably server-side. v2 also adds an
+  optional 360-deg spin capture and size recommendation: brand size
+  charts plus fit-ease rules map measurements to a size per brand.
+  v1 shows measurements only.
+
+======================================================================
+8. ARCHITECTURE AND TECH STACK
+======================================================================
+v1 is a progressive web app (PWA). All image processing runs on the
+phone and no images are uploaded. The built app is served from
+Google Cloud Run; sign-in uses Google via Firebase Authentication;
+measurement results are stored in Firestore.
+
+  [Phone browser: PWA]
+     |  - front camera, motion sensors, MediaPipe (all on-device)
+     |
+     |-- HTTPS GET app files ------------> [Cloud Run: nginx serving
+     |                                      the built PWA]
+     |-- Google sign-in (redirect) ------> same origin /__/auth/...
+     |     nginx proxies /__/auth/ and       --> [fashionassitant.
+     |     /__/firebase/ ------------------>      firebaseapp.com]
+     |                                       --> [Firebase Auth]
+     |-- read/write results (Firebase SDK) --> [Firestore]
+                                              (security rules allow
+                                               only the one account)
+
+  - Language/build: TypeScript + Vite (no UI framework in v1; the
+    capture flow is a small state machine driving plain DOM)
+  - PWA: vite-plugin-pwa (manifest, service worker, offline cache)
+  - Camera: FRONT (selfie) camera, getUserMedia facingMode "user",
+    so the screen faces the user standing 2-3 m away. The preview is
+    mirrored for the user; all computation uses unmirrored frames.
+  - Vision: @mediapipe/tasks-vision on the GPU.
+      Live guidance: pose_landmarker_lite every frame (no
+      segmentation).
+      Processing: pose_landmarker_heavy + ImageSegmenter
+      (selfie_multiclass_256x256) on per-region full-res crops of
+      the ~10 kept frames per step; ~5-15 s on a mid-range phone.
+  - Auth: Firebase Authentication, Google provider (section 10)
+  - Database: Cloud Firestore via the Firebase web SDK (section 11)
+  - Hosting: Google Cloud Run, container = nginx + built files
+    (section 9)
+  - Tests: Vitest for geometry and measurement math
+  - Dev replay harness (development only, never in production
+    builds, never uploads): a "Debug capture" toggle (dev builds or
+    ?debug=1 on a dev host) saves frames (JPEG) + sensor readings +
+    inputs as a .zip download (fflate); replay.html loads that zip
+    on a desktop browser and runs the same pipeline. Fixtures live
+    in fixtures/ (gitignored).
+  - Node.js 22 LTS for local tooling and the build stage
+
+Module layout (src/):
+
+  main.ts       Entry: init Firebase, await finishRedirect() (section
+                10), start the auth guard, start the app
+  config.ts     Reads VITE_* env vars (Firebase config, allowed email)
+  auth/         firebase.ts (app/auth/db init), authGuard.ts (sign-in
+                screen, redirect/popup, allowlist check, sign-out)
+  data/         scans.ts (save/list scans), devices.ts (camera
+                calibration per device: lensOffsetCm, distortionK1),
+                deviceId.ts, settings.ts (correction factors),
+                validation.ts (tape measurements, error stats,
+                computing k), deleteAll.ts (delete all my data)
+  capture/      camera.ts (front camera, track settings), sensors.ts
+                (gravity vector, tilt/roll averaging, permission),
+                voice.ts
+  device/       detectModel.ts (UA client hints on Android, screen
+                match on iOS), profiles.ts (loads
+                public/device-profiles.json, generic fallback),
+                profile.ts (builds the device profile: L_lens, f_px,
+                track size; merges saved calibration)
+  flow/         stateMachine.ts (signin > home > setup > place >
+                capture steps 1-3 > processing > results)
+  vision/       pose.ts (lite live, heavy on capture),
+                segmentation.ts, crops.ts (per-region crop boxes from
+                landmarks), edgeRefine.ts (snap mask edge to image
+                gradient), quality.ts (blur, framing, stillness)
+  geometry/     cameraModel.ts (intrinsics, tilt), groundPlane.ts,
+                unproject.ts, distortion.ts (radial k1)
+  measure/      levels.ts (body levels, cm above floor), linear.ts,
+                circumference.ts, calibration.ts (apply correction
+                factors)
+  ui/screens/   signIn.ts, home.ts, setup.ts, placePhone.ts,
+                capture.ts, processing.ts, results.ts, history.ts,
+                validation.ts, validationSummary.ts
+                (one file per screen in section 6)
+  ui/parts/     levelGauge.ts, poseGuide.ts (ghost outline + live
+                skeleton), statusBorder.ts, measurementRow.ts,
+                bodyDiagram.ts, unitToggle.ts
+  ui/styles.css Large type, high-contrast colours, full-screen layout
+  dev/          debugCapture.ts (zip download), replay.ts (replay.html
+                page); dev-only, excluded from production builds
+  units.ts      cm <-> inch formatting (inches to nearest 0.25")
+  wakeLock.ts   Keeps the screen on during setup and capture
+
+======================================================================
+9. DEPLOYMENT AND BACKEND (GOOGLE CLOUD)
+======================================================================
+The app runs on Google Cloud Run, and Firestore is the backend. There
+is no custom API server in v1: the phone talks to Firestore directly
+through the Firebase SDK, and Firestore security rules enforce
+access (section 11).
+
+Google Cloud project:
+  - Project ID: fashionassitant. One project, also registered as a
+    Firebase project (Firebase Auth and Firestore live in the same
+    project)
+  - Region: us-central1 (default; change before first deploy if you
+    prefer another). The Firestore location cannot be changed later.
+  - APIs to enable: Cloud Run, Cloud Build, Artifact Registry,
+    Firestore, Identity Toolkit (Firebase Auth)
+
+Cloud Run service "fashion-assistant":
+  - Container: multi-stage Docker build (Node builds the app, nginx
+    serves dist/ on port 8080)
+  - nginx also proxies /__/auth/ and /__/firebase/ to
+    https://fashionassitant.firebaseapp.com (same-origin auth helper
+    for redirect sign-in, section 10)
+  - Deployed with "gcloud run deploy --source ." (Cloud Build builds
+    the Dockerfile and pushes to Artifact Registry)
+  - --allow-unauthenticated: the page itself must load in a normal
+    browser. The app files are not secret; all personal data is
+    protected by sign-in + Firestore rules.
+  - Scales to zero when idle; min instances 0, max instances 2
+  - HTTPS URL https://fashion-assistant-<hash>-uc.a.run.app (a custom
+    domain can be mapped later)
+  - The run.app host is only known after the first deploy: deploy
+    once, set VITE_FIREBASE_AUTH_DOMAIN + the OAuth redirect URI,
+    redeploy (section 10)
+
+Firestore:
+  - Database ID: fashionassitant-db (Native mode). This is a named
+    database, not "(default)", so the app, the Firebase CLI and the
+    gcloud commands must all pass this ID explicitly.
+  - Stores scan results, scan history, per-device camera
+    calibration, validation data (tape measurements, raw values,
+    correction factors) and per-scan diagnostics. Only numbers are
+    stored; camera images stay on the phone.
+  - Offline: enable the SDK's persistent local cache so a scan
+    finished without signal is saved and syncs later
+
+Cost: expected ~$0 (Cloud Run scales to zero, Firestore free tier).
+As a guardrail the runbook adds a billing budget alert (section 13).
+
+======================================================================
+10. AUTHENTICATION AND ACCESS CONTROL
+======================================================================
+Users sign in with Google (Firebase Authentication). Only the Google
+account jlivanramirez7@gmail.com can use the app. The allowlist is
+enforced in two places:
+
+  1. Server side (the real protection): Firestore security rules
+     reject every read and write unless the signed-in token's email
+     is jlivanramirez7@gmail.com, the email is verified, and the
+     sign-in provider is Google. See section 11.
+  2. Client side (user experience only): after sign-in the app
+     checks the email; any other account is signed out immediately
+     and shown "This app is private."
+
+Sign-in flow:
+  1. App loads -> getRedirectResult() finishes a pending redirect
+     sign-in (if any); onAuthStateChanged() checks for a session.
+  2. No session -> show a "Sign in with Google" button.
+  3. Tap -> GoogleAuthProvider with login_hint =
+     jlivanramirez7@gmail.com, then:
+       Production: signInWithRedirect(); the page goes to the
+       same-origin helper https://<app-host>/__/auth/handler and
+       comes back to the app, which handles getRedirectResult().
+       Dev: signInWithPopup().
+  4. Email != allowed email -> signOut(), show the "private" message.
+  5. Allowed -> session persists on the phone (local persistence is
+     the default), so later visits skip sign-in; continue to Home.
+  6. A "Sign out" link lives on the Home screen (S2).
+
+Why redirect with a same-origin helper: popup sign-in often fails in
+an installed iOS home-screen app (PWA). Plain signInWithRedirect is
+also unreliable when the app's domain (run.app) differs from the auth
+domain (firebaseapp.com), because Safari and Chrome block third-party
+storage. Serving the auth helper from the app's own origin fixes
+that:
+  - nginx proxies /__/auth/ and /__/firebase/ to
+    https://fashionassitant.firebaseapp.com (proxy_pass,
+    proxy_ssl_server_name on, Host header set to the firebaseapp
+    host; section 12).
+  - VITE_FIREBASE_AUTH_DOMAIN = the app's own host (run.app host or
+    custom domain) in .env.production. In .env.development it stays
+    fashionassitant.firebaseapp.com and dev uses signInWithPopup.
+  - The code picks redirect when authDomain equals location.host,
+    otherwise popup.
+
+Firebase Auth settings (console):
+  - Sign-in method: enable Google only; support email
+    jlivanramirez7@gmail.com
+  - Authorized domains: localhost, the Cloud Run run.app host (and
+    custom domain, if mapped), and any dev host used for phone
+    testing (section 13)
+  - OAuth redirect URI: add https://<app-host>/__/auth/handler to
+    the OAuth 2.0 Web client's authorized redirect URIs (Google
+    Cloud console > APIs & Services > Credentials).
+  - The run.app host is only known after the first deploy: deploy
+    once, set VITE_FIREBASE_AUTH_DOMAIN + redirect URI, redeploy.
+
+Hardening:
+  - Restrict the Firebase browser API key (Google Cloud console >
+    APIs & Services > Credentials) to HTTP referrers: the run.app URL,
+    https://fashionassitant.firebaseapp.com (dev popup) and localhost
+    (section 13, step 14).
+  - Do not set the response header
+    Cross-Origin-Opener-Policy: same-origin; it breaks the dev
+    sign-in popup.
+  - Other Google accounts can still complete Google sign-in and get
+    an (empty) Firebase Auth user record, but they can read and
+    write nothing. Optional later: block them at sign-in with an
+    Identity Platform blocking function.
+
+Code sketch - src/auth/authGuard.ts:
+
+  import { GoogleAuthProvider, getRedirectResult, onAuthStateChanged,
+           signInWithPopup, signInWithRedirect, signOut,
+           type User } from "firebase/auth";
+  import { auth } from "./firebase";
+  import { ALLOWED_EMAIL, firebaseConfig } from "../config";
+
+  // Production: authDomain is the app's own host (same-origin
+  // helper via nginx) -> redirect. Dev: firebaseapp.com -> popup.
+  const useRedirect = firebaseConfig.authDomain === location.host;
+
+  export function isAllowed(user: User | null): boolean {
+    return !!user && user.emailVerified &&
+           user.email?.toLowerCase() === ALLOWED_EMAIL;
+  }
+
+  async function checkAllowed(user: User | null): Promise<void> {
+    if (user && !isAllowed(user)) {
+      await signOut(auth);
+      throw new Error("This app is private.");
+    }
+  }
+
+  // Call once on load, before showing the sign-in screen.
+  export async function finishRedirect(): Promise<void> {
+    const result = await getRedirectResult(auth);
+    await checkAllowed(result?.user ?? null);
+  }
+
+  export async function signIn(): Promise<void> {
+    const provider = new GoogleAuthProvider();
+    provider.setCustomParameters({ login_hint: ALLOWED_EMAIL });
+    if (useRedirect) {
+      await signInWithRedirect(auth, provider); // page navigates away
+      return;
+    }
+    const { user } = await signInWithPopup(auth, provider);
+    await checkAllowed(user);
+  }
+
+  export function watchAuth(onChange: (u: User | null) => void) {
+    return onAuthStateChanged(auth, async (user) => {
+      if (user && !isAllowed(user)) { await signOut(auth); user = null; }
+      onChange(user);
+    });
+  }
+
+Code sketch - src/auth/firebase.ts:
+
+  import { initializeApp } from "firebase/app";
+  import { getAuth } from "firebase/auth";
+  import { initializeFirestore, persistentLocalCache }
+           from "firebase/firestore";
+  import { firebaseConfig, FIRESTORE_DATABASE_ID } from "../config";
+
+  export const app = initializeApp(firebaseConfig);
+  // getAuth() in a browser already uses local persistence.
+  export const auth = getAuth(app);
+  // Third argument = the named database "fashionassitant-db";
+  // without it the SDK would use "(default)".
+  export const db = initializeFirestore(app,
+    { localCache: persistentLocalCache() }, FIRESTORE_DATABASE_ID);
+
+======================================================================
+11. FIRESTORE DATA MODEL AND SECURITY RULES
+======================================================================
+Database: fashionassitant-db (named database, see section 9).
+
+All data lives under the signed-in user's id, so the rules are
+simple: you can touch only your own subtree, and only if you are the
+allowed account.
+
+Collections:
+
+  users/{uid}
+    email            string   "jlivanramirez7@gmail.com"
+    createdAt        timestamp
+    heightCm         number   last entered height (pre-fills setup)
+    units            string   "in" | "cm" (Results display)
+    bodyType         string   "male" | "female" | "unspecified"
+                              (optional on Setup; default
+                              "unspecified")
+
+  users/{uid}/scans/{scanId}          (scanId = auto id)
+    createdAt        timestamp
+    status           string   "complete" | "partial"
+    heightCm         number   scale input used for this scan
+    bodyType         string   "male" | "female" | "unspecified"
+                              (picks correction factors k)
+    subjectLabel     string   default "me"; e.g. "Person 3" for a
+                              validation scan of a test person
+    scaleSource      string   "height" | "height+floor" | "paper"
+    deviceId         string   -> users/{uid}/devices/{deviceId}
+    appVersion       string
+    viewsCaptured    array    ["front","side","back"]
+    measurements     map      corrected values: name -> { valueCm,
+                              uncertaintyCm, confidence }, e.g.
+                              chest: { valueCm: 98.4,
+                                       uncertaintyCm: 2.6,
+                                       confidence: 0.82 }
+    rawMeasurements  map      uncorrected values (before k):
+                              name -> valueCm
+    tapeMeasurements map?     optional, from S9 Validation:
+                              name -> valueCm (entered in in or cm,
+                              stored in cm)
+    diagnostics      map      userAgent, deviceModelGuess,
+                              modelSource, videoWidth, videoHeight,
+                              focalLengthPx (spec and solved),
+                              lensOffsetCm, lensHeightCm, tiltDeg,
+                              rollDeg,
+                              distanceM { front, side, back },
+                              scaleAgreementPct (height vs
+                              floor-geometry difference),
+                              qualityScores { front, side, back },
+                              retakes [ { step, reason } ],
+                              processingMs, modelVersions
+
+  users/{uid}/devices/{deviceId}      (deviceId = random UUID kept in
+                                       localStorage on first run)
+    label            string   user agent summary, e.g. "iPhone Safari"
+    deviceModelGuess string   e.g. "Pixel 8" or "iPhone 14/15 (6.1in)"
+    modelSource      string   "ua-client-hints" | "screen-match" |
+                              "generic"
+    screen           map      { width, height, devicePixelRatio }
+    phoneHeightMm    number?  from device-profiles.json
+    lensOffsetCm     number   L_lens, bottom edge to front lens
+                              (device profile, then paper
+                              calibration; generic default 14)
+    lensOffsetSource string   "profile" | "paper" | "generic"
+    front35mmEqMm    number   front camera spec (generic 26)
+    distortionK1     number?  optional, from paper calibration
+    focalLengthPx    number   f_y at captureWidth x captureHeight:
+                              starts from the spec, then the height
+                              solve / paper calibration
+    focalLengthSource string  "spec" | "height-solve" | "paper"
+    captureWidth     number   actual video width (getSettings)
+    captureHeight    number   actual video height (getSettings)
+    calibrationScans number   scans that refined focalLengthPx
+    updatedAt        timestamp
+
+  users/{uid}/settings/correctionFactors
+    male             map      measurement key -> k
+    female           map      measurement key -> k
+    unspecified      map      measurement key -> k
+    updatedAt        timestamp
+    (k = mean(tape / raw ellipse estimate), computed by the
+    Validation summary from scans that have tapeMeasurements)
+
+Size recommendations are v2; v1 stores measurements only.
+
+Measurement keys (section 7; values always stored in cm):
+  general:  height
+  tops:     neck, chest, naturalWaist, shoulderWidth, sleeveLength,
+            shirtSleeve, backLength, bicep, wrist
+  bottoms:  pantWaist, hips, inseam, outseam, rise, thigh, knee, calf
+  dresses:  bust (= chest), underbust, shoulderToWaist, torsoLength
+  shoes:    footLength
+
+firestore.rules:
+
+  rules_version = '2';
+  service cloud.firestore {
+    match /databases/{database}/documents {
+      function isAllowedUser() {
+        return request.auth != null
+          && request.auth.token.email == 'jlivanramirez7@gmail.com'
+          && request.auth.token.email_verified == true
+          && request.auth.token.firebase.sign_in_provider == 'google.com';
+      }
+      match /users/{uid}/{document=**} {
+        allow read, write: if isAllowedUser() && request.auth.uid == uid;
+      }
+      // Everything else is denied by default.
+    }
+  }
+
+With rules_version 2, {document=**} matches zero or more segments,
+so this one rule covers users/{uid} itself and every subcollection
+(scans, devices, settings). The new collections need no rule changes.
+
+"Delete all my data" (History, section 6) works client-side under
+these rules: the web SDK cannot delete a subtree in one call, so the
+app lists users/{uid}/scans, devices and settings, deletes those
+documents in batched writes (max 500 per batch), deletes users/{uid},
+then calls terminate() + clearIndexedDbPersistence() to clear the
+local Firestore cache and removes the stored deviceId from
+localStorage.
+
+Rules are deployed with the Firebase CLI (section 13) and should be
+tested with the Firestore emulator: the allowed account can
+read/write its own subtree; any other account and anonymous requests
+are denied.
+
+======================================================================
+12. PROJECT SCAFFOLDING
+======================================================================
+Repository layout:
+
+  FashionAssistant/
+    designdoc.txt
+    README.md               setup + deploy steps (from section 13)
+    package.json
+    package-lock.json
+    tsconfig.json
+    vite.config.ts
+    index.html
+    replay.html             dev-only replay page (never built into
+                            dist/)
+    .env.example            template of the VITE_* variables
+    .env.development        Firebase web config for npm run dev
+                            (auth domain fashionassitant.firebaseapp.com)
+    .env.production         real Firebase web config (committed; see
+                            note below)
+    .gitignore              node_modules, dist, public/models,
+                            public/wasm, .env.local, certs, fixtures
+    .dockerignore           node_modules, dist, .git, fixtures
+    Dockerfile
+    nginx.conf
+    firebase.json           points the Firebase CLI at firestore.rules
+    .firebaserc             default Firebase project: fashionassitant
+    firestore.rules
+    firestore.indexes.json  empty for v1
+    scripts/
+      setup-assets.mjs      copies MediaPipe wasm, downloads models
+    public/
+      icons/                PWA icons 192x192, 512x512, maskable
+      device-profiles.json  per-model phone height, front-lens
+                            position, front-camera 35 mm-eq focal
+                            length, iOS screen-match keys, generic
+                            fallback (section 4); hand-maintained
+                            from manufacturer spec sheets
+      models/               (generated) pose + segmenter models
+      wasm/                 (generated) MediaPipe wasm runtime
+    src/                    modules from section 8
+      dev/                  dev-only code: debugCapture.ts (zip of
+                            frames + sensors + inputs), replay.ts
+                            (entry for replay.html)
+    fixtures/               (gitignored) debug-capture zips for replay
+    tests/                  Vitest tests for geometry/ and measure/
+
+Dependencies (latest stable at install time; lockfile pins them):
+  runtime:  firebase, @mediapipe/tasks-vision, fflate (used only by
+            src/dev/; imported behind import.meta.env.DEV, so it is
+            tree-shaken out of production builds)
+  dev:      vite, typescript, vite-plugin-pwa,
+            @vitejs/plugin-basic-ssl, vitest, firebase-tools
+
+package.json scripts:
+  "dev":          "vite --host"
+  "build":        "tsc --noEmit && vite build"
+  "preview":      "vite preview --host"
+  "test":         "vitest run"
+  "postinstall":  "node scripts/setup-assets.mjs"
+  "deploy:rules": "firebase deploy --only firestore:rules"
+  "deploy":       "gcloud run deploy fashion-assistant --source .
+                   --region us-central1 --allow-unauthenticated
+                   --max-instances 2"
+
+Environment variables (.env.example):
+  VITE_FIREBASE_API_KEY=
+  VITE_FIREBASE_AUTH_DOMAIN=fashionassitant.firebaseapp.com
+  VITE_FIREBASE_PROJECT_ID=fashionassitant
+  VITE_FIREBASE_APP_ID=
+  VITE_FIREBASE_MESSAGING_SENDER_ID=
+  VITE_FIRESTORE_DATABASE_ID=fashionassitant-db
+  VITE_ALLOWED_EMAIL=jlivanramirez7@gmail.com
+
+  VITE_FIREBASE_AUTH_DOMAIN differs per environment (section 10):
+    .env.development  fashionassitant.firebaseapp.com; dev uses
+                      signInWithPopup
+    .env.production   the app's own host (run.app host, or the
+                      custom domain if one is mapped), so
+                      signInWithRedirect goes through the same-origin
+                      /__/auth/ proxy in nginx.conf. Set after the
+                      first deploy (section 13).
+  All other values are the same in both files.
+
+  Note: Firebase web config values are public identifiers, not
+  secrets (they ship in the page anyway). Committing .env.production
+  lets "gcloud run deploy --source ." build without extra build-arg
+  plumbing. Access is protected by sign-in, the security rules and
+  the API key referrer restriction. No real secrets exist in v1.
+
+vite.config.ts (outline):
+  - plugins: basicSsl() for HTTPS in dev (camera needs HTTPS on a
+    phone), VitePWA({ registerType: "autoUpdate", manifest: {...} })
+  - manifest: name "Fashion Assistant", display "standalone" (iOS
+    has no "fullscreen"), orientation "portrait", theme/background
+    colours, icons
+  - workbox: precache app files; runtimeCaching CacheFirst for
+    /models/* and /wasm/* (models are tens of MB, above the default
+    2 MB precache limit); navigateFallbackDenylist [/^\/__\//] so
+    the service worker never answers /__/auth/ or /__/firebase/
+    with index.html
+  - build.rollupOptions.input: index.html only. replay.html is a
+    dev-only input served by the dev server; it never reaches dist/.
+
+MediaPipe assets (scripts/setup-assets.mjs):
+  - Copy node_modules/@mediapipe/tasks-vision/wasm/* -> public/wasm/
+  - Download into public/models/:
+      pose_landmarker_lite.task         (live guidance, every frame)
+        https://storage.googleapis.com/mediapipe-models/
+        pose_landmarker/pose_landmarker_lite/float16/latest/
+        pose_landmarker_lite.task
+      pose_landmarker_heavy.task        (Processing step)
+        https://storage.googleapis.com/mediapipe-models/
+        pose_landmarker/pose_landmarker_heavy/float16/latest/
+        pose_landmarker_heavy.task
+      selfie_multiclass_256x256.tflite  (per-region crops)
+        https://storage.googleapis.com/mediapipe-models/
+        image_segmenter/selfie_multiclass_256x256/float32/latest/
+        selfie_multiclass_256x256.tflite
+  - Skip download if the file already exists
+  - App loads them with FilesetResolver.forVisionTasks("/wasm") and
+    modelAssetPath "/models/..."; delegate "GPU" with CPU fallback
+
+Dockerfile:
+
+  FROM node:22-alpine AS build
+  WORKDIR /app
+  COPY package.json package-lock.json ./
+  COPY scripts ./scripts
+  RUN npm ci
+  COPY . .
+  RUN npm run build
+
+  FROM nginx:1.27-alpine
+  COPY nginx.conf /etc/nginx/conf.d/default.conf
+  COPY --from=build /app/dist /usr/share/nginx/html
+  EXPOSE 8080
+
+nginx.conf (the project ID fashionassitant is typed in directly; it
+is a public identifier):
+
+  server {
+    listen 8080;
+    root /usr/share/nginx/html;
+    gzip on;
+    gzip_types text/css application/javascript application/json
+               application/wasm;
+    location / {
+      try_files $uri $uri/ /index.html;
+    }
+    location = /sw.js {
+      add_header Cache-Control "no-cache";
+    }
+    location /assets/ {
+      add_header Cache-Control "public, max-age=31536000, immutable";
+    }
+    # Same-origin Firebase Auth helper for signInWithRedirect
+    # (section 10)
+    location /__/auth/ {
+      proxy_pass https://fashionassitant.firebaseapp.com;
+      proxy_ssl_server_name on;
+      proxy_set_header Host fashionassitant.firebaseapp.com;
+    }
+    location /__/firebase/ {
+      proxy_pass https://fashionassitant.firebaseapp.com;
+      proxy_ssl_server_name on;
+      proxy_set_header Host fashionassitant.firebaseapp.com;
+    }
+  }
+
+  The /__/ prefix locations are longer than "/", so nginx uses them
+  instead of the index.html fallback. Do not add a
+  Cross-Origin-Opener-Policy: same-origin header (it breaks the dev
+  popup).
+
+firebase.json:
+
+  { "firestore": { "database": "fashionassitant-db",
+                   "rules": "firestore.rules",
+                   "indexes": "firestore.indexes.json" },
+    "emulators": { "auth": { "port": 9099 },
+                   "firestore": { "port": 8081 } } }
+
+======================================================================
+13. SETUP AND DEPLOYMENT RUNBOOK
+======================================================================
+One-time Google Cloud + Firebase setup for project fashionassitant
+(needs a billing account for Cloud Run):
+
+  1. gcloud auth login
+  2. gcloud projects create fashionassitant   (skip if it already
+                                               exists)
+     gcloud config set project fashionassitant
+     gcloud billing projects link fashionassitant
+       --billing-account=BILLING_ACCOUNT_ID
+  3. Budget alert (cost guardrail; expected cost is ~$0 because
+     Cloud Run scales to zero and Firestore stays in the free tier):
+     gcloud services enable billingbudgets.googleapis.com
+     gcloud billing budgets create --billing-account=BILLING_ACCOUNT_ID
+       --display-name="fashion-assistant" --budget-amount=10USD
+       --threshold-rule=percent=0.5 --threshold-rule=percent=1.0
+  4. gcloud services enable run.googleapis.com
+       cloudbuild.googleapis.com artifactregistry.googleapis.com
+       firestore.googleapis.com identitytoolkit.googleapis.com
+  5. gcloud firestore databases create --database=fashionassitant-db
+       --location=us-central1 --type=firestore-native
+  6. npm install -g firebase-tools
+     firebase login
+     firebase projects:addfirebase fashionassitant
+  7. firebase apps:create WEB fashion-assistant --project fashionassitant
+     firebase apps:sdkconfig WEB APP_ID
+     -> copy the values into .env.development and .env.production
+        (both start with auth domain fashionassitant.firebaseapp.com)
+     -> nginx.conf already points the /__/ locations at
+        fashionassitant.firebaseapp.com
+  8. Firebase console > Authentication > Get started >
+     Sign-in method > Google > Enable (support email
+     jlivanramirez7@gmail.com)
+  9. npm run deploy:rules
+
+First deploy (two passes, because the run.app host is only known
+after the first deploy):
+
+  10. npm run deploy
+      -> prints the service URL (https://fashion-assistant-...run.app)
+  11. In .env.production set
+      VITE_FIREBASE_AUTH_DOMAIN=<the run.app host> (no https://)
+  12. Google Cloud console > APIs & Services > Credentials > OAuth
+      2.0 Client IDs > the Web client (auto created by Google
+      Service) > Authorized redirect URIs > add
+      https://<app-host>/__/auth/handler
+  13. Firebase console > Authentication > Settings > Authorized
+      domains > add the run.app host
+  14. Google Cloud console > APIs & Services > Credentials > the
+      browser API key > restrict HTTP referrers to the run.app URL,
+      https://fashionassitant.firebaseapp.com (dev popup) and localhost
+  15. npm run deploy (second pass, with the new auth domain)
+  16. Check that https://<app-host>/__/auth/handler returns the
+      Firebase auth page, not the app.
+  17. Open the URL in Safari on the iPhone, sign in, run a test scan,
+      confirm a document appears under users/{uid}/scans in
+      Firestore. Sign in with a different Google account and confirm
+      it is refused.
+  18. Share > Add to Home Screen, open the installed app, sign out
+      and sign in again from it: the redirect must return to the app
+      signed in (this is where popup sign-in fails).
+
+  If a custom domain is mapped later, repeat 11-15 with that host.
+
+Local development:
+
+  - npm install (also fetches MediaPipe assets)
+  - npm run dev -> https://<your-PC-LAN-IP>:5173 on the phone (same
+    Wi-Fi), accept the self-signed certificate warning
+  - Dev uses signInWithPopup with the auth domain
+    fashionassitant.firebaseapp.com from .env.development (no proxy
+    needed). Add the LAN IP to Firebase authorized domains. If it is
+    not accepted, use an HTTPS tunnel (e.g. cloudflared) and add the
+    tunnel host instead.
+  - Optional: firebase emulators:start to test rules and auth
+    without touching production data
+  - npm test for the geometry/measurement unit tests
+
+Debug capture and replay (dev builds only; nothing is uploaded):
+
+  1. On the phone, open the dev server (or add ?debug=1 on a dev
+     host) and turn on "Debug capture".
+  2. Run a scan. At the end the phone downloads a .zip with the
+     captured frames (JPEG), sensor readings and inputs.
+  3. Copy the zip to the PC into fixtures/ (gitignored).
+  4. On the PC open https://localhost:5173/replay.html and pick the
+     zip. It runs the same pipeline and prints measurements and
+     diagnostics, so pipeline changes can be re-run on the same
+     scans without standing in front of the phone again.
+
+Later deploys: npm run deploy (rules: npm run deploy:rules).
+
+======================================================================
+14. MILESTONES
+======================================================================
+Each milestone ends in something testable on your own phone; dates
+are not set yet.
+
+  M0  Scaffolding and deploy: repo layout, Vite + PWA, Firebase init,
+      Google sign-in with the allowlist (signInWithRedirect through
+      the same-origin /__/auth/ helper in production, popup in dev),
+      Firestore rules, Dockerfile, first Cloud Run deploy, then set
+      VITE_FIREBASE_AUTH_DOMAIN + the OAuth redirect URI and
+      redeploy; billing budget alert.
+      Exit: the run.app URL signs in jlivanramirez7@gmail.com both
+      from the installed iOS home-screen app and from Android
+      Chrome, refuses another Google account, and writes + reads a
+      test scan document; the budget alert exists.
+  M1  Capture skeleton: front (selfie) camera with mirrored preview
+      (computation on unmirrored frames), permissions on the Start
+      tap, automatic device profile (model detection, first
+      device-profiles.json entries for the test phones, track
+      settings, spec focal length), level gauge, lens height
+      h = L_lens * sin(theta) from the profile (generic 14 cm if
+      unknown), tilt check (60-85 deg),
+      voice prompts, the 3 capture steps (front A-pose, side, back
+      A-pose) with auto-capture, live guidance with
+      pose_landmarker_lite. Dev-only "Debug capture" zip + replay.html
+      harness. Each scan saves `diagnostics`.
+      Exit: a 3-step scan runs end to end on one iPhone and one
+      Android, and its debug zip replays on a desktop browser.
+  M2  Lengths: height-scaled lengths (height, shoulders, arm, sleeve
+      from the front A-pose, inseam, outseam) with perspective
+      correction; saved to Firestore. Validation mode: S9 Validation
+      screen ("Add tape measurements" on Results) with subjectLabel
+      and tape values, stored as `tapeMeasurements`.
+      Exit: within +/-2 cm of a tape measure on 3 people, as
+      recorded in validation mode.
+  M3  Circumferences: side and back views, per-region crop
+      segmentation at full resolution with edge refinement, body
+      levels (section 7), per-view perspective correction with
+      levels matched by height above the floor, ellipse model.
+      Evaluate PoseLandmarker's own segmentation mask as an
+      alternative; keep whichever validates better. First
+      correction factors k per body level and bodyType from
+      validation data (users/{uid}/settings/correctionFactors).
+      Exit: chest, waist, hips within +/-4 cm on 5 people.
+  M4  Calibration and quality: floor-geometry cross-check, optional
+      paper calibration (focal length, lensOffsetCm, distortionK1)
+      saved to the device record, quality checks and retake
+      prompts, uncertainty display (including expected distortion
+      error), Validation summary (mean absolute error, % within
+      target, k per level and bodyType).
+      Exit: the Validation summary shows the v1 success criteria met
+      on 10-20 people.
+  M5  Results and history: full Results screen grouped by garment
+      (section 6), body diagrams, in/cm toggle, Copy all, per-item
+      retake, History screen from Firestore, "Delete all my data".
+      No size recommendation in v1.
+      Exit: a full scan shows every measurement in section 7, can be
+      reopened from History, and "Delete all my data" leaves
+      users/{uid} empty.
+  v2  (later) SMPL-X body-model fitting, size recommendation with
+      brand size charts and fit-ease rules, optional 360 deg spin
+      capture.
+
+Note: measuring other people is a non-goal; the one exception is
+validation scans of test people for M2-M4, done on your signed-in
+phone with their own height and a subjectLabel (e.g. "Person 3").
+Their scans are saved under your account.
+
+======================================================================
+15. RISKS AND OPEN QUESTIONS
+======================================================================
+The biggest risk is circumference accuracy; the biggest open decision
+is whether v1 stays fully on-device for image processing.
+
+Risks:
+  - Circumferences miss the +/-3 cm target -> wrong size.
+    Mitigation: tape-measure validation early (M3, validation
+    mode); per-level, per-bodyType correction factors; v2
+    body-model fit.
+  - Coarse segmentation (256x256 mask) -> outline edges off by
+    several mm to cm.
+    Mitigation: per-region crops at full resolution (~1.5-2 mm per
+    mask pixel) plus edge refinement to the strongest image
+    gradient; compare with PoseLandmarker's mask in M3.
+  - Loose clothing inflates outlines -> chest/waist/hips too large.
+    Mitigation: clear "fitted clothing" instruction; detect loose
+    outlines and warn.
+  - Floor-level view hides face or shoulders for some body types ->
+    missing landmarks.
+    Mitigation: step further back (up to 3 m) or tilt the phone
+    within the 60-85 deg range; the lens-height formula assumes
+    the phone's bottom edge is on the floor, so no chair.
+  - Busy background or clothing the same colour as the wall ->
+    segmentation fails.
+    Mitigation: quality check on the outline; ask the user to move.
+  - Front-camera lens distortion (often wide-angle) -> widths near
+    the frame edges are stretched.
+    Mitigation: radial coefficient distortionK1 from the paper
+    calibration; without it, keep the whole body inside the
+    central ~80% of the frame and add the expected distortion
+    error to each measurement's uncertainty.
+  - Self-reported height is often rounded up 1-2 cm -> every
+    measurement scales by the same error.
+    Mitigation: Setup tip "Measure your height against a wall once
+    - don't guess"; floor-geometry cross-check (scaleAgreementPct).
+  - Phone model not detected or not in device-profiles.json (iOS
+    only exposes "iPhone"; new models ship every year) -> lens
+    height and focal length start from generic values.
+    Mitigation: iOS screen-size match picks the model family; the
+    generic profile (L_lens 14 cm, 26 mm-eq) lowers confidence;
+    the height solve corrects focal length on every scan; paper
+    calibration stores lensOffsetCm per device; add new models to
+    the JSON as they appear.
+  - Spec focal length wrong for the video mode (some phones crop
+    the sensor for video) -> perspective correction off.
+    Mitigation: the height solve overrides the spec value when they
+    differ by more than 5%; the result is saved per device.
+  - Unknown focal length per phone -> perspective correction off.
+    Mitigation: solve from user height and tilt; save per device.
+  - Processing is slow or the phone heats up on mid-range phones
+    (heavy pose model + crop segmentation on ~10 full-res frames
+    per step).
+    Mitigation: lite model only for live guidance; heavy model and
+    segmentation only in the Processing step (~5-15 s, with
+    progress); record processingMs in diagnostics.
+  - iOS browser limits (permissions, camera stops in background) ->
+    scan breaks midway.
+    Mitigation: unlock everything on the Start tap; resume from the
+    last completed pose.
+  - Sign-in fails in the installed iOS home-screen app (popups are
+    unreliable there).
+    Mitigation: signInWithRedirect with the same-origin /__/auth/
+    helper proxied by nginx; no COOP same-origin header (breaks the
+    dev popup); test the installed iOS app and Android Chrome in
+    M0.
+  - Large MediaPipe models slow the first load on mobile data.
+    Mitigation: service-worker cache after first load; show a
+    download progress bar.
+
+Open questions:
+  [ ] Keep image processing fully on-device, or allow optional
+      upload for a more accurate server-side fit (v2)?
+  [ ] Which measurements matter most to you (tops, trousers,
+      tailoring)?
+  [ ] Which phones do we test on first?
+  [ ] Which iPhone and Android models go into device-profiles.json
+      first? (Start with the phones you will test on.)
+  [ ] Region: keep us-central1 or pick one closer to you?
+  [ ] Custom domain, or is the run.app URL fine?
+
+(Size charts for the recommendation are a v2 question; see v2 in
+section 14.)

@@ -1,0 +1,10 @@
+node_modules
+dist
+dev-dist
+public/models
+public/wasm
+.env.local
+*.pem
+certs
+fixtures/*
+!fixtures/.gitkeep

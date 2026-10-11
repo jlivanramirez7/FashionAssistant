@@ -86,19 +86,28 @@ describe.skipIf(!HAS_DIST)("production bundle (dist/)", () => {
     if (lazy.length) console.info(`[QA bundle] lazy dev chunk(s): ${lazy.join(", ")}`);
   });
 
-  it("sw.js: navigateFallbackDenylist /^\\/__\\// present; no models/ precached", () => {
+  it("sw.js: navigateFallbackDenylist /^\\/api\\// present; no models/ precached", () => {
     const sw = read("dist/sw.js");
-    expect(sw, "sw.js must deny /__/ navigations").toMatch(/denylist\s*:\s*\[\s*\/\^\\\/__\\\/\//);
+    expect(sw, "sw.js must never answer /api/ navigations (GIS POST target, JSON API)").toMatch(/denylist\s*:\s*\[\s*\/\^\\\/api\\\/\//);
     expect(sw).not.toMatch(/["']models\/[^"']+\.(task|tflite)["']/);
     expect(sw).not.toMatch(/url\s*:\s*["']replay\.html["']/);
-    if (/url\s*:\s*["']wasm\//.test(sw)) console.warn("[QA bundle] note: wasm/*.js is precached by globPatterns (also runtime-cached)");
   });
 
-  it("named database id and allowed email are baked into the app", () => {
-    const all = jsFiles().map(read).join("\n");
-    expect(all, `"${DB_ID}" not in bundle (named database not used?)`).toContain(DB_ID);
+  it("v2: no Firebase and no server code in the client bundle; GIS + allowed email present", () => {
+    const files = jsFiles();
+    const hits = files.flatMap((f) => {
+      const t = read(f);
+      return [/firebase/i, /firestore\.googleapis|@google-cloud\/firestore|google-auth-library|identitytoolkit/i, /connectFirestoreEmulator|localhost:8081/]
+        .filter((re) => re.test(t))
+        .map((re) => `${f}: ${re}`);
+    });
+    expect(hits, `forbidden in dist:\n${hits.join("\n")}`).toEqual([]);
+    const all = files.map(read).join("\n");
+    expect(all, `server-only db id "${DB_ID}" leaked into the client (VITE_ prefix?)`).not.toContain(DB_ID);
+    expect(all, "GIS client script URL").toContain("accounts.google.com/gsi/client");
+    expect(all, "GIS redirect target").toContain("/api/auth/google");
     expect(all.toLowerCase(), "allowed email not in bundle (.env.production)").toContain(ALLOWED_EMAIL);
-    expect(all, "emulator wiring must not ship").not.toMatch(/connectFirestoreEmulator\s*\(|localhost:8081/);
+    expect(all, "no client secret in the bundle").not.toMatch(/GOCSPX-|client_secret/);
   });
 
   it("MediaPipe models + wasm ship in dist (setup-assets only warns on download failure)", () => {
@@ -113,13 +122,13 @@ describe.skipIf(!HAS_DIST)("production bundle (dist/)", () => {
     expect(bad, `missing/truncated (models must be served in production): ${bad.join(", ")}`).toEqual([]);
   });
 
-  it("service worker precache: report dev-only chunks and wasm loaders (warning only)", () => {
+  it("service worker precache excludes dev-only chunks and wasm loaders (globIgnores)", () => {
     const sw = read("dist/sw.js");
     const urls = [...sw.matchAll(/url\s*:\s*"([^"]+)"/g)].map((m) => m[1]);
     const dev = urls.filter((u) => /debugCapture|\/debug-/.test(u));
     const wasm = urls.filter((u) => u.startsWith("wasm/"));
-    if (dev.length) console.warn(`[QA bundle] dev-only chunks precached for every user: ${dev.join(", ")}`);
-    if (wasm.length) console.warn(`[QA bundle] wasm loaders precached: ${wasm.join(", ")}`);
+    expect(dev, "dev-only chunks precached for every user").toEqual([]);
+    expect(wasm, "wasm loaders precached (they are runtime-cached)").toEqual([]);
     expect(urls).toContain("index.html");
   });
 

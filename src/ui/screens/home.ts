@@ -15,7 +15,14 @@ export function render(root: HTMLElement, ctx: AppContext): () => void {
     h("div", { class: "row-links" },
       linkButton("History >", () => ctx.dispatch({ type: "OPEN_HISTORY" })),
       linkButton("Sign out", () => {
-        void signOutUser().catch((e: unknown) => alert(errorMessage(e)));
+        signOutUser()
+          .then(() => {
+            ctx.user = null;
+            ctx.userDoc = null;
+            ctx.authError = null;
+            ctx.dispatch({ type: "AUTH_SIGNED_OUT" });
+          })
+          .catch((e: unknown) => alert(`Could not sign out: ${errorMessage(e)}`));
       }),
     ),
   );

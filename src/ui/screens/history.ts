@@ -92,7 +92,7 @@ export function render(root: HTMLElement, ctx: AppContext): () => void {
     deleteAllMyData(uid)
       .then(() => {
         ctx.scanCache.clear();
-        // Firestore was terminated and its cache cleared: start fresh.
+        // Server data, session, outbox and deviceId are gone: start fresh.
         location.reload();
       })
       .catch((e: unknown) => {

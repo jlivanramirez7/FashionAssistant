@@ -1,16 +1,19 @@
-// Entry (design doc sections 8 and 10): check config, finish a pending
-// redirect sign-in, watch auth, then drive the screens from the pure
+// Entry (design doc sections 8 and 10, docs/CONTRACTS-v2.md): check the
+// sign-in config, read a redirect sign-in error, flush queued offline scans,
+// ask the server for the session user, then drive the screens from the pure
 // state machine in src/flow/stateMachine.ts.
 import "./ui/styles.css";
-import { isFirebaseConfigured } from "./config";
+import { isAuthConfigured } from "./config";
 import { CAPTURE_STATES, INITIAL_STATE, transition, type Event, type State, type StateName } from "./flow/stateMachine";
 import type { Units, UserDoc } from "./types";
 import { closeFrames, createVideoElement, errorMessage, newSession, type AppContext } from "./ui/context";
 import { h } from "./ui/dom";
 
+export const SIGN_IN_FAILED_MESSAGE = "Sign-in did not work. Please try again.";
+
 type Screen = { render(root: HTMLElement, ctx: AppContext): () => void };
 
-/** Screens are loaded lazily, so a missing Firebase config never loads Firebase. */
+/** Screens are loaded lazily (smaller first load; nothing loads when not configured). */
 const SCREENS: Record<Exclude<StateName, "boot">, () => Promise<Screen>> = {
   signin: () => import("./ui/screens/signIn"),
   home: () => import("./ui/screens/home"),
@@ -29,10 +32,10 @@ function renderNotConfigured(root: HTMLElement): void {
     h("section", { class: "screen screen-message" },
       h("div", { class: "screen-body" },
         h("h1", null, "Fashion Assistant"),
-        h("p", { class: "error" }, "Firebase is not configured yet - fill VITE_FIREBASE_API_KEY and VITE_FIREBASE_APP_ID."),
-        h("p", { class: "muted" },
-          "Copy .env.example to .env.local (or fill .env.development / .env.production) with the values from the Firebase console (Project settings > Your apps), then restart the dev server or rebuild.",
+        h("p", { class: "error" },
+          "Sign-in is not configured yet - set VITE_GOOGLE_CLIENT_ID (Google Cloud console > APIs & Services > Credentials > OAuth client ID).",
         ),
+        h("p", { class: "muted" }, "Put it in .env.development / .env.production (or .env.local), then restart the dev server or rebuild."),
       ),
     ),
   );
@@ -44,11 +47,8 @@ function renderBoot(root: HTMLElement, text = "Loading..."): void {
 
 async function boot(root: HTMLElement): Promise<void> {
   renderBoot(root);
-  const [{ finishRedirect, watchAuth }, { getUserDoc, saveUserDoc }, hardware] = await Promise.all([
-    import("./auth/authGuard"),
-    import("./data/user"),
-    import("./ui/hardware"),
-  ]);
+  const [{ getCurrentUser, readAuthError, PRIVATE_MESSAGE }, { getUserDoc, saveUserDoc }, { flushOutbox }, hardware] =
+    await Promise.all([import("./auth/authGuard"), import("./data/user"), import("./data/scans"), import("./ui/hardware")]);
 
   let state: State = INITIAL_STATE;
   let cleanup: () => void = () => undefined;
@@ -119,43 +119,49 @@ async function boot(root: HTMLElement): Promise<void> {
     if (next !== state) show(next);
   }
 
-  try {
-    await finishRedirect();
-  } catch (e) {
-    ctx.authError = errorMessage(e);
-  }
+  // Queued offline scans go up on start and whenever we come back online.
+  const flush = (): void => {
+    void Promise.resolve()
+      .then(() => flushOutbox())
+      .catch((e: unknown) => console.warn("outbox not flushed", e));
+  };
+  flush();
+  window.addEventListener("online", flush);
 
-  watchAuth((user) => {
-    if (!user) {
-      ctx.user = null;
-      ctx.userDoc = null;
-      dispatch({ type: "AUTH_SIGNED_OUT", error: ctx.authError ?? undefined });
-      return;
+  const authError = readAuthError();
+  if (authError === "private") ctx.authError = PRIVATE_MESSAGE;
+  else if (authError === "failed") ctx.authError = SIGN_IN_FAILED_MESSAGE;
+
+  let user: { uid: string; email: string } | null = null;
+  try {
+    user = await getCurrentUser();
+  } catch (e) {
+    console.warn("session check failed", e);
+    ctx.authError ??= `Could not reach the server: ${errorMessage(e)}. Check your connection and reload.`;
+  }
+  if (!user) {
+    dispatch({ type: "AUTH_SIGNED_OUT", error: ctx.authError ?? undefined });
+    return;
+  }
+  ctx.user = user;
+  ctx.authError = null;
+  try {
+    let userDoc: UserDoc | null = await getUserDoc(user.uid);
+    if (!userDoc) {
+      userDoc = { email: user.email, createdAt: Date.now(), units: "in", bodyType: "unspecified" };
+      await saveUserDoc(user.uid, userDoc).catch((e: unknown) => console.warn("user doc not created", e));
     }
-    const firstSignIn = ctx.user?.uid !== user.uid;
-    ctx.user = user;
-    ctx.authError = null;
-    if (!firstSignIn) return;
-    getUserDoc(user.uid)
-      .then(async (doc) => {
-        let userDoc: UserDoc | null = doc;
-        if (!userDoc) {
-          userDoc = { email: user.email, createdAt: Date.now(), units: "in", bodyType: "unspecified" };
-          await saveUserDoc(user.uid, userDoc).catch((e: unknown) => console.warn("user doc not created", e));
-        }
-        ctx.userDoc = userDoc;
-        ctx.units = userDoc.units === "cm" ? "cm" : "in";
-      })
-      .catch((e: unknown) => console.warn("user doc not loaded", e))
-      .finally(() => {
-        if (ctx.user?.uid === user.uid) dispatch({ type: "AUTH_SIGNED_IN" });
-      });
-  });
+    ctx.userDoc = userDoc;
+    ctx.units = userDoc.units === "cm" ? "cm" : "in";
+  } catch (e) {
+    console.warn("user doc not loaded", e);
+  }
+  dispatch({ type: "AUTH_SIGNED_IN" });
 }
 
 const root = document.getElementById("app");
 if (root) {
-  if (!isFirebaseConfigured()) renderNotConfigured(root);
+  if (!isAuthConfigured()) renderNotConfigured(root);
   else
     boot(root).catch((e: unknown) => {
       console.error(e);

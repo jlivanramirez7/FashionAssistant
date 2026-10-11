@@ -14,5 +14,6 @@
     "types": ["vite/client", "vite-plugin-pwa/client"],
     "noEmit": true
   },
-  "include": ["src", "tests", "vite.config.ts"]
+  "include": ["src", "tests", "vite.config.ts"],
+  "exclude": ["tests/server"]
 }

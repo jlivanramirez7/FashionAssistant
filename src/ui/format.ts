@@ -48,7 +48,7 @@ export function measurementLabel(key: MeasurementKey, bodyType: BodyType): strin
 /**
  * Chest and bust are the same measurement (section 7). The UI shows ONE row
  * (key "chest", in Tops, labelled by bodyType) and hides "bust" everywhere;
- * "bust" stays stored in Firestore.
+ * "bust" stays stored on the server.
  */
 export const HIDDEN_KEYS: readonly MeasurementKey[] = ["bust"];
 

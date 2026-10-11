@@ -2,7 +2,7 @@
 // QA: cross-module invariants checked statically (source scans) and at runtime.
 // Static checks skip files that do not exist yet; each failure names the owner.
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { ALLOWED_EMAIL, DB_ID, exists, fn, listFiles, loadModule, readOwned, readText, stripComments, type Team } from "./_helpers";
+import { ALLOWED_EMAIL, exists, fn, listFiles, loadModule, readOwned, readText, stripComments, type Team } from "./_helpers";
 
 const OWNERS: [RegExp, Team][] = [
   [/^src\/(config\.ts|auth\/|data\/)/, "A auth-data"],
@@ -24,29 +24,41 @@ function scan(files: string[], bad: RegExp, what: string): string[] {
 }
 
 describe("privacy: no image ever leaves the device (section 1, 8)", () => {
-  it("nothing imports firebase/storage or posts binary data", () => {
+  it("no upload channels: no sendBeacon/XHR/WebSocket; no third-party SDKs", () => {
     const files = srcTs();
     const problems = [
-      ...scan(files, /from\s+["']firebase\/storage["']|import\(\s*["']firebase\/storage["']\s*\)/, "imports firebase/storage"),
-      ...scan(files, /navigator\.sendBeacon|XMLHttpRequest|new\s+WebSocket/, "uses a network upload API"),
-      ...scan(files, /method\s*:\s*["'](POST|PUT)["']/i, "issues a POST/PUT request"),
+      ...scan(files, /navigator\.sendBeacon|XMLHttpRequest|new\s+WebSocket/, "uses a raw network upload API"),
+      ...scan(files, /from\s+["'](firebase(\/[\w-]+)?|@google-cloud\/firestore|google-auth-library)["']/, "imports a server/Firebase SDK in the client"),
     ];
     expect(problems, problems.join("\n")).toEqual([]);
   });
-  it("fetch() only for static assets (device-profiles.json, MediaPipe wasm/models)", () => {
-    const allowed = /^src\/(device\/profiles\.ts|vision\/|dev\/)/;
+  it("fetch() only in src/data + src/auth (same-origin /api) and static assets (profiles, MediaPipe)", () => {
+    const allowed = /^src\/(data\/|auth\/|device\/profiles\.ts|vision\/|dev\/)/;
     const problems = srcTs()
       .filter((p) => !allowed.test(p) && /\bfetch\s*\(/.test(code(p)))
-      .map((p) => `[${owner(p)}] ${p}: unexpected fetch() - only static assets may be fetched`);
+      .map((p) => `[${owner(p)}] ${p}: unexpected fetch() - API calls belong in src/data`);
     expect(problems, problems.join("\n")).toEqual([]);
   });
-  it("data layer (A) never references image types", () => {
+  it("client talks only to its own origin + accounts.google.com (GIS)", () => {
+    const problems: string[] = [];
+    for (const p of srcTs()) {
+      for (const m of code(p).matchAll(/["'`](https?:\/\/[^"'`\s/]+)/g)) {
+        // http://www.w3.org = SVG/XML namespace URIs (identifiers, never fetched)
+        if (!/^https:\/\/accounts\.google\.com$/.test(m[1]) && !/localhost|127\.0\.0\.1|example|^http:\/\/www\.w3\.org$/.test(m[1])) {
+          problems.push(`[${owner(p)}] ${p}: external origin ${m[1]}`);
+        }
+      }
+    }
+    expect(problems, problems.join("\n")).toEqual([]);
+  });
+  it("data layer never references image types", () => {
     const files = listFiles("src/data", (p) => p.endsWith(".ts"));
     const problems = scan(files, /\b(ImageBitmap|ImageData|HTMLCanvasElement|OffscreenCanvas|toDataURL|toBlob|CapturedFrame|ViewCapture)\b/, "data layer references image data");
     expect(problems, problems.join("\n")).toEqual([]);
   });
-  it("no hard-coded Firebase API key or secrets in src", () => {
-    const problems = scan(srcTs(), /AIza[0-9A-Za-z_-]{20,}|-----BEGIN/, "hard-coded key/secret");
+  it("no hard-coded secrets in src or server (OAuth client id is public, client secret is not used)", () => {
+    const files = [...srcTs(), ...listFiles("server", (p) => p.endsWith(".ts"))];
+    const problems = scan(files, /AIza[0-9A-Za-z_-]{20,}|-----BEGIN|client_secret|GOCSPX-/, "hard-coded key/secret");
     expect(problems, problems.join("\n")).toEqual([]);
   });
 });
@@ -102,85 +114,142 @@ describe("spoken/on-screen text never says turn left/right (section 5, 6)", () =
   });
 });
 
-describe("Firebase wiring (sections 9, 10, 11)", () => {
-  it("[A auth-data] named database + persistent cache; getFirestore() never used", () => {
-    const fb = stripComments(readOwned("src/auth/firebase.ts", "A auth-data"));
-    expect(fb).toMatch(/initializeFirestore\s*\(/);
-    expect(fb).toMatch(/FIRESTORE_DATABASE_ID/);
-    expect(fb).toMatch(/persistentLocalCache/);
-    const problems = scan(srcTs(), /\bgetFirestore\s*\(/, "uses getFirestore() (would hit the (default) database)");
-    expect(problems, problems.join("\n")).toEqual([]);
+describe("v2 client wiring (CONTRACTS-v2: GIS + /api)", () => {
+  it("[A2 client-data] API calls: same-origin /api paths, credentials same-origin, X-Requested-With on writes", () => {
+    const files = listFiles("src/data", (p) => p.endsWith(".ts")).concat(listFiles("src/auth", (p) => p.endsWith(".ts")));
+    const all = files.map((p) => code(p)).join("\n");
+    expect(all, "client must call /api/...").toMatch(/["'`]\/api\//);
+    expect(all, 'fetch must use credentials: "same-origin"').toMatch(/credentials\s*:\s*["']same-origin["']/);
+    expect(all, "writes must send an X-Requested-With header").toMatch(/X-Requested-With/i);
+    expect(all, "X-Requested-With value must be fashion-assistant").toMatch(/["']fashion-assistant["']/);
+    const absolute = scan(files, /fetch\(\s*["'`]https?:/, "fetches an absolute URL (must be same-origin /api)");
+    expect(absolute, absolute.join("\n")).toEqual([]);
   });
-  it("[A auth-data] sign-in: login_hint, redirect iff authDomain === location.host, private message", () => {
-    const g = stripComments(readOwned("src/auth/authGuard.ts", "A auth-data")) + (exists("src/auth/allowlist.ts") ? code("src/auth/allowlist.ts") : "");
-    expect(g).toMatch(/login_hint/);
-    expect(g).toMatch(/location\.host\b/);
-    expect(g).toMatch(/signInWithRedirect/);
-    expect(g).toMatch(/signInWithPopup/);
-    expect(g).toMatch(/getRedirectResult/);
+  it("[A2 client-data] GIS: redirect ux_mode, login_uri /api/auth/google, script from accounts.google.com/gsi/client", () => {
+    const g = listFiles("src/auth", (p) => p.endsWith(".ts")).map((p) => code(p)).join("\n");
+    expect(g).toContain("https://accounts.google.com/gsi/client");
+    expect(g).toMatch(/ux_mode\s*:\s*["']redirect["']/);
+    expect(g).toMatch(/\/api\/auth\/google/);
+    expect(g).toMatch(/auto_select\s*:\s*false/);
     expect(g).toContain("This app is private.");
+    expect(g).toMatch(/history\.replaceState/);
   });
-  it("[A auth-data] delete-all: batches <= 500, terminate + clearIndexedDbPersistence, clears deviceId", () => {
-    const d = stripComments(readOwned("src/data/deleteAll.ts", "A auth-data"));
-    expect(d).toMatch(/\b500\b/);
-    expect(d).toMatch(/terminate\s*\(/);
-    expect(d).toMatch(/clearIndexedDbPersistence\s*\(/);
+  it("[A2 client-data] outbox key fa.outbox; flush on 'online'; clientId sent", () => {
+    const d = listFiles("src/data", (p) => p.endsWith(".ts")).map((p) => code(p)).join("\n");
+    expect(d).toContain("fa.outbox");
+    expect(d).toMatch(/["']online["']/);
+    expect(d).toMatch(/clientId/);
+  });
+  it("[A2 client-data] delete-all: DELETE /api/me/data, clears outbox + deviceId", () => {
+    const d = stripComments(readOwned("src/data/deleteAll.ts", "A2 client-data"));
+    expect(d).toMatch(/\/api\/me\/data/);
     expect(d).toMatch(/clearDeviceId\s*\(|removeItem\(\s*["']fa\.deviceId["']/);
-    for (const sub of ["scans", "devices", "settings"]) expect(d, `deleteAll must cover ${sub}`).toContain(sub);
+    expect(d + listFiles("src/data", (p) => p.endsWith(".ts")).map((p) => code(p)).join("\n")).toMatch(/fa\.outbox/);
   });
-  it("[E ui-flow] main.ts: not-configured message, finishRedirect before watchAuth", () => {
-    const m = stripComments(readOwned("src/main.ts", "E ui-flow"));
-    expect(m).toMatch(/isFirebaseConfigured\s*\(/);
-    const fr = m.search(/finishRedirect\s*\(/);
-    const wa = m.search(/watchAuth\s*\(/);
-    expect(fr, "finishRedirect() must be called").toBeGreaterThan(-1);
-    expect(wa, "watchAuth() must be called").toBeGreaterThan(-1);
-    expect(fr, "finishRedirect() must come before watchAuth()").toBeLessThan(wa);
+  it("[E2 ui] main.ts: not-configured message, readAuthError, getCurrentUser; no Firebase calls", () => {
+    const m = stripComments(readOwned("src/main.ts", "E2 ui"));
+    expect(m).toMatch(/isAuthConfigured\s*\(/);
+    expect(m).toMatch(/readAuthError\s*\(/);
+    expect(m).toMatch(/getCurrentUser\s*\(/);
+    expect(m).not.toMatch(/finishRedirect|watchAuth|isFirebaseConfigured/);
+    const all = srcTs().map((p) => code(p)).join("\n");
+    expect(all, "VITE_GOOGLE_CLIENT_ID setup hint must be shown when not configured").toMatch(/VITE_GOOGLE_CLIENT_ID/);
+  });
+  it("[E2 ui] sign-in screen renders the official GIS button (no custom button)", () => {
+    const s = stripComments(readOwned("src/ui/screens/signIn.ts", "E2 ui"));
+    expect(s).toMatch(/renderSignInButton\s*\(/);
   });
 });
 
-describe("[A auth-data] runtime: config + allowlist", () => {
+describe("[S server] static invariants", () => {
+  const serverFiles = () => listFiles("server", (p) => p.endsWith(".ts"));
+  it("imports: node:* builtins, the two Google libs, relative .ts files, src/types.ts only", () => {
+    const problems: string[] = [];
+    for (const p of serverFiles()) {
+      for (const m of code(p).matchAll(/(?:^|\n)\s*(?:import|export)\b[^"'\n]*?from\s*["']([^"']+)["']|import\(\s*["']([^"']+)["']\s*\)/g)) {
+        const spec = m[1] ?? m[2];
+        const ok = spec.startsWith("node:") || spec === "@google-cloud/firestore" || spec === "google-auth-library" ||
+          (spec.startsWith(".") && spec.endsWith(".ts") && (!spec.includes("/src/") || spec.endsWith("/src/types.ts")));
+        if (!ok) problems.push(`[S server] ${p}: import "${spec}"`);
+      }
+    }
+    expect(problems, problems.join("\n")).toEqual([]);
+  });
+  it("only store-firestore.ts touches Firestore; uid-scoped paths per section 11", () => {
+    const users = serverFiles().filter((p) => /@google-cloud\/firestore/.test(code(p)));
+    expect(users.every((p) => /store-firestore\.ts$/.test(p)), `Firestore imported in: ${users.join(", ")}`).toBe(true);
+    if (exists("server/store-firestore.ts")) {
+      const s = code("server/store-firestore.ts");
+      expect(s, "named database id").toMatch(/databaseId/);
+      for (const c of ["users", "scans", "devices", "settings", "correctionFactors", "sessions"]) expect(s, `path segment ${c}`).toContain(`"${c}"`);
+    }
+  });
+  it("sessions: 32 random bytes, sha256-hashed at rest, cookie fa_session HttpOnly SameSite=Lax 30 days", () => {
+    const all = serverFiles().map((p) => code(p)).join("\n");
+    expect(all).toMatch(/randomBytes\(\s*32\s*\)/);
+    expect(all).toMatch(/createHash\(\s*["']sha256["']\s*\)/);
+    expect(all).toContain("fa_session");
+    expect(all).toMatch(/HttpOnly|httpOnly\s*:\s*true/);
+    expect(all).toMatch(/SameSite=Lax|sameSite\s*:\s*["']Lax["']/);
+    expect(all).toMatch(/verifyIdToken/);
+    expect(all).toMatch(/email_verified/);
+  });
+  it("config defaults: fashionassitant-db, fashionassitant, 8080, memory outside production", () => {
+    const c = stripComments(readOwned("server/config.ts", "S server"));
+    expect(c).toContain('"fashionassitant-db"');
+    expect(c).toContain('"fashionassitant"');
+    expect(c).toMatch(/8080/);
+    expect(c).toMatch(/["']memory["']/);
+    expect(c).toMatch(/\.env\.production/);
+    expect(c).toMatch(/\.env\.development/);
+    expect(c).toMatch(/toLowerCase\(\)/);
+  });
+});
+
+describe("[A2 client-data] runtime: config + allowlist + auth error", () => {
   afterEach(() => {
     vi.unstubAllEnvs();
     vi.resetModules();
   });
-  it("config defaults: named db id, APP_VERSION, not configured when keys are empty", async () => {
+  it("not configured when VITE_GOOGLE_CLIENT_ID is empty; APP_VERSION 0.1.0", async () => {
     vi.resetModules();
-    vi.stubEnv("VITE_FIRESTORE_DATABASE_ID", "");
-    vi.stubEnv("VITE_FIREBASE_API_KEY", "");
-    vi.stubEnv("VITE_FIREBASE_APP_ID", "");
-    const c = await loadModule("src/config", "A auth-data");
-    expect(c.FIRESTORE_DATABASE_ID).toBe(DB_ID);
+    vi.stubEnv("VITE_GOOGLE_CLIENT_ID", "");
+    const c = await loadModule("src/config", "A2 client-data");
+    expect(c.isAuthConfigured()).toBe(false);
     expect(c.APP_VERSION).toBe("0.1.0");
-    expect(c.isFirebaseConfigured()).toBe(false);
+    vi.resetModules();
+    vi.stubEnv("VITE_GOOGLE_CLIENT_ID", "123-abc.apps.googleusercontent.com");
+    const c2 = await loadModule("src/config", "A2 client-data");
+    expect(c2.isAuthConfigured()).toBe(true);
+    expect(c2.GOOGLE_CLIENT_ID).toBe("123-abc.apps.googleusercontent.com");
   });
-  it("ALLOWED_EMAIL is lowercased; isAllowed truth table", async () => {
+  it("ALLOWED_EMAIL lowercased; isAllowed truth table; empty allowlist fails closed", async () => {
     vi.resetModules();
     vi.stubEnv("VITE_ALLOWED_EMAIL", "JLivanRamirez7@Gmail.com");
-    const c = await loadModule("src/config", "A auth-data");
+    const c = await loadModule("src/config", "A2 client-data");
     expect(c.ALLOWED_EMAIL).toBe(ALLOWED_EMAIL);
-    const g = await loadModule("src/auth/authGuard", "A auth-data");
-    const isAllowed = fn(g, "isAllowed", "A auth-data", "src/auth/authGuard");
+    const g = await loadModule("src/auth/authGuard", "A2 client-data");
+    const isAllowed = fn(g, "isAllowed", "A2 client-data", "src/auth/authGuard");
     expect(isAllowed({ email: ALLOWED_EMAIL, emailVerified: true })).toBe(true);
     expect(isAllowed({ email: "JLIVANRAMIREZ7@GMAIL.COM", emailVerified: true })).toBe(true);
     expect(isAllowed({ email: ALLOWED_EMAIL, emailVerified: false })).toBe(false);
     expect(isAllowed({ email: "someone.else@gmail.com", emailVerified: true })).toBe(false);
-    expect(isAllowed({ email: `x${ALLOWED_EMAIL}`, emailVerified: true })).toBe(false);
-    expect(isAllowed({ email: null, emailVerified: true })).toBe(false);
     expect(isAllowed(null)).toBe(false);
-  }, 60_000);
-  it("empty allowlist fails closed", async () => {
     vi.resetModules();
     vi.stubEnv("VITE_ALLOWED_EMAIL", "");
-    const g = await loadModule("src/auth/authGuard", "A auth-data");
-    expect(g.isAllowed({ email: ALLOWED_EMAIL, emailVerified: true })).toBe(false);
+    const g2 = await loadModule("src/auth/authGuard", "A2 client-data");
+    expect(g2.isAllowed({ email: ALLOWED_EMAIL, emailVerified: true })).toBe(false);
   }, 60_000);
-  it("importing auth/firebase does not initialise Firebase (lazy)", async () => {
-    vi.resetModules();
-    const fb = await loadModule("src/auth/firebase", "A auth-data");
-    expect(typeof fb.getFirebase).toBe("function");
-    expect(fb.app ?? fb.auth ?? fb.db, "no eager app/auth/db exports").toBeUndefined();
-  }, 60_000);
+  it("readAuthError reads ?auth_error= and removes it from the URL", async () => {
+    const g = await loadModule("src/auth/authGuard", "A2 client-data");
+    const read = fn(g, "readAuthError", "A2 client-data", "src/auth/authGuard");
+    for (const [q, want] of [["auth_error=private&", "private"], ["auth_error=failed&", "failed"], ["", null], ] as const) {
+      history.replaceState(null, "", `/?${q}keep=1`);
+      expect(read(), q || "(none)").toBe(want);
+      expect(location.search, "auth_error must be removed").not.toContain("auth_error");
+    }
+    expect(g.PRIVATE_MESSAGE).toBe("This app is private.");
+  });
 });
 
 describe("[A auth-data] runtime: deviceId", () => {

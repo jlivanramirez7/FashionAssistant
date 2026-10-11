@@ -1,34 +1,20 @@
-// App configuration from Vite env (design doc sections 9, 10, 12).
-// Nothing here touches the Firebase SDK, so importing it never crashes.
+// Client configuration from Vite env (docs/CONTRACTS-v2.md).
+// Only public values live here; Firestore is reached through the server.
 
 function env(name: string): string {
   const value = (import.meta.env as Record<string, unknown>)[name];
   return typeof value === "string" ? value.trim() : "";
 }
 
-export const firebaseConfig: {
-  apiKey: string;
-  authDomain: string;
-  projectId: string;
-  appId: string;
-  messagingSenderId: string;
-} = {
-  apiKey: env("VITE_FIREBASE_API_KEY"),
-  authDomain: env("VITE_FIREBASE_AUTH_DOMAIN"),
-  projectId: env("VITE_FIREBASE_PROJECT_ID"),
-  appId: env("VITE_FIREBASE_APP_ID"),
-  messagingSenderId: env("VITE_FIREBASE_MESSAGING_SENDER_ID"),
-};
-
-/** Named Firestore database (not "(default)"). */
-export const FIRESTORE_DATABASE_ID: string = env("VITE_FIRESTORE_DATABASE_ID") || "fashionassitant-db";
+/** OAuth 2.0 Web client ID for Google Identity Services (public). */
+export const GOOGLE_CLIENT_ID: string = env("VITE_GOOGLE_CLIENT_ID");
 
 /** The only account allowed to use the app, lowercased. Empty => nobody is allowed (fail closed). */
 export const ALLOWED_EMAIL: string = env("VITE_ALLOWED_EMAIL").toLowerCase();
 
 export const APP_VERSION: string = "0.1.0";
 
-/** False until the web app is registered (apiKey / appId / projectId filled in). */
-export function isFirebaseConfigured(): boolean {
-  return firebaseConfig.apiKey !== "" && firebaseConfig.appId !== "" && firebaseConfig.projectId !== "";
+/** False until VITE_GOOGLE_CLIENT_ID is set; the UI then shows a setup message. */
+export function isAuthConfigured(): boolean {
+  return GOOGLE_CLIENT_ID !== "";
 }

@@ -1,15 +1,19 @@
 # QA notes - Fashion Assistant (living checklist)
 
 Owner: QA agent. QA owns only `tests/qa/**` and this file. Spec: `designdoc.txt`;
-contracts: `docs/CONTRACTS.md`; shared types: `src/types.ts`.
+contracts: `docs/CONTRACTS-v2.md` (binding; v2 = no Firebase, Node server is the
+only Firestore client) on top of `docs/CONTRACTS.md` (teams B, C, D, F unchanged);
+shared types: `src/types.ts`.
 
-Every verification cycle runs, in this order:
+Every verification cycle runs, in this order (build BEFORE the full test run,
+because `vitest run` includes the bundle checks whenever dist/ exists, and a
+stale dist/ gives false failures):
 
 ```
-npx tsc --noEmit                 # gate 1 - zero errors
-npx vitest run                   # gate 2 - all unit tests, all teams + tests/qa
-npm run build                    # gate 3 - tsc + vite build (creates dist/)
-npx vitest run tests/qa/bundle.test.ts   # gate 4 - bundle checks (skips if no dist/)
+npm run typecheck                # G1 - client tsc + server tsc (tsconfig.server.json), zero errors
+npm run build                    # G3 - typecheck + vite build (creates dist/)
+npx vitest run                   # G2 - all unit tests, all teams + tests/qa (incl. G4 bundle)
+npx vitest run tests/qa/bundle.test.ts   # G4 - bundle checks on the fresh dist/
 ```
 
 A failing QA test always names its owner team in brackets, e.g.
@@ -21,21 +25,25 @@ A failing QA test always names its owner team in brackets, e.g.
 
 | # | Gate | Command / file | Pass condition |
 |---|------|----------------|----------------|
-| G1 | Typecheck | `npx tsc --noEmit` | 0 errors (tests/ included in tsconfig - QA files must compile too) |
+| G1 | Typecheck | `npm run typecheck` | 0 errors in both tsconfigs (tests/ is in the client tsconfig - QA files must compile too) |
 | G2 | Unit tests | `npx vitest run` | 0 failures across `tests/**` |
 | G3 | Production build | `npm run build` | exits 0; `dist/index.html`, `dist/sw.js`, `*.webmanifest` exist |
-| G4 | Bundle checks | `tests/qa/bundle.test.ts` | all pass (see invariants I10-I12) |
-| G5 | Contract | `tests/qa/contract.test.ts` | every export in CONTRACTS.md exists with the right kind and arity |
+| G4 | Bundle checks | `tests/qa/bundle.test.ts` | all pass (invariants I13) |
+| G5 | Contract | `tests/qa/contract.test.ts` | every export in CONTRACTS(-v2).md exists with the right kind and arity; removed v1 exports are gone |
 | G6 | Conventions | `tests/qa/conventions.test.ts` | B -> C geometry chain reproduces a known scene |
-| G7 | Spec coverage | `tests/qa/spec-coverage.test.ts` | all 23 keys specified, labelled, grouped, mapped, validated |
-| G8 | Invariants | `tests/qa/invariants.test.ts` | privacy, dev-code, mirroring, Firebase wiring, auth rules |
+| G7 | Spec coverage | `tests/qa/spec-coverage.test.ts` | all 23 keys specified, labelled, grouped, mapped (server Firestore mapping), validated |
+| G8 | Invariants | `tests/qa/invariants.test.ts` | privacy, dev code, mirroring, GIS + /api client wiring, server static rules |
 | G9 | Pipeline E2E | `tests/qa/pipeline-e2e.test.ts` | synthetic scene measured within targets |
-| G10 | Config files | `tests/qa/config-files.test.ts` | rules, firebase.json, nginx, Docker, env, vite, icons, device profiles |
+| G10 | Config files | `tests/qa/config-files.test.ts` | no Firebase, deny-all rules, Dockerfile (Node 24), env, scripts, tsconfigs, vite, icons, device profiles |
+| G11 | Server API | `tests/qa/server-api.test.ts` | real HTTP against `createApp` (memory store, fake verifier): auth, CSRF, cookie, routes, idempotency, validation, static, security headers |
+| G12 | Client x server | `tests/qa/client-server.test.ts` | CLIENT src/data + src/auth driven against the real routes via a fetch shim; outbox end to end |
 
 QA test files (`tests/qa/`): `_helpers.ts` (dynamic, owner-tagged module loading),
 `_scene.ts` (independent ground-truth pinhole scene + synthetic person),
-`contract`, `conventions`, `spec-coverage`, `invariants`, `pipeline-e2e`,
-`config-files`, `bundle` (`*.test.ts`).
+`_server.ts` (starts server `createApp` with the memory store + fake GIS verifier,
+raw HTTP client, cookie-jar fetch shim with an offline switch, CONTRACTS-v2 route
+table), and `contract`, `conventions`, `spec-coverage`, `invariants`,
+`pipeline-e2e`, `config-files`, `server-api`, `client-server`, `bundle` (`*.test.ts`).
 
 ---------------------------------------------------------------------------
 
@@ -69,24 +77,79 @@ Each line: invariant - who must keep it - where it is enforced.
 - I10f Uncertainty > 0 for every measured key when the device has no `distortionK1` (distortion term), even if frames agree exactly. - C - pipeline-e2e.
 - I10g Units: 2.54 cm per inch exactly; inches rounded to the nearest 0.25". - E - spec-coverage.
 
-**Privacy and data (A, all)**
-- I11a No image ever leaves the device: no `firebase/storage`, no sendBeacon/XHR/WebSocket/POST, `fetch` only for static assets (device-profiles.json, MediaPipe), and no image types in `src/data/**`. The serialized scan contains only numbers, strings and timestamps. - all, A - invariants, spec-coverage.
-- I11b Named database: `initializeFirestore(app, {localCache: persistentLocalCache(...)}, FIRESTORE_DATABASE_ID)` and never `getFirestore()`. The default id is `fashionassitant-db`. It is in firebase.json, all .env files and the built bundle. - A - invariants, config-files, bundle.
-- I11c Allowlist: `ALLOWED_EMAIL` lowercased; `isAllowed` requires a verified, case-insensitive exact match; an empty allowlist fails closed. login_hint; redirect iff `authDomain === location.host`, else popup; "This app is private." - A - invariants.
-- I11d Firebase init is lazy (importing never initialises); not configured means the UI shows a setup message. main.ts calls `finishRedirect()` before `watchAuth()`. - A, E - invariants.
-- I11e Delete all: batches <= 500, scans/devices/settings plus users/{uid}, then `terminate` + `clearIndexedDbPersistence`, then clear `fa.deviceId`. - A - invariants. **Manual: M-M5c.**
-- I11f deviceId: a v4 UUID in localStorage `fa.deviceId`, stable until cleared. - A - invariants.
+**Privacy and data (v2: A2 client, S server)**
+- I11a No image ever leaves the device:
+  - Client: no sendBeacon/XHR/WebSocket; no Firebase or server SDKs in the client; `fetch` only in src/data + src/auth (same-origin `/api`) and for static assets (device-profiles.json, MediaPipe); no image types in `src/data/**`; the only external origin in client code is https://accounts.google.com (GIS).
+  - Outbox (`fa.outbox`): numbers only.
+  - Server: rejects image-like data with 4xx JSON (data: URLs, strings > 10 kB, number arrays > 10k, bodies > 1 MB, unknown measurement keys, non-numeric measurement values, bad ids).
+  - Firestore mapping (`server/store-firestore.ts`): plain data only.
+  - Enforced by invariants, server-api, spec-coverage, client-server.
+- I11b Firestore is reached ONLY by the server:
+  - `@google-cloud/firestore` is imported only in `server/store-firestore.ts`, which uses `databaseId` (`fashionassitant-db`, server-only env, never `VITE_`).
+  - Paths follow section 11: `users/{uid}/scans|devices|settings/correctionFactors`, plus top-level `sessions/{sha256 hex}`; uid = Google `sub`.
+  - The client bundle contains no db id, no Firebase and no server libraries.
+  - Enforced by invariants, config-files, bundle.
+- I11c Allowlist (server-side is the real check):
+  - Server: `verifyIdToken` with audience = GOOGLE_CLIENT_ID; requires `email_verified` and lowercased email === ALLOWED_EMAIL; an empty ALLOWED_EMAIL means nobody can sign in. The email is re-checked on every request.
+  - Client `isAllowed`: a pure helper with the same truth table; fails closed.
+  - Enforced by server-api, invariants.
+- I11d Sign-in flow: GIS button with `ux_mode: "redirect"`, `login_uri: <origin>/api/auth/google`, `auto_select: false`, script `https://accounts.google.com/gsi/client`. The server POST handler responds with a 303 redirect:
+  - Allowed account: `/` plus a `fa_session` cookie.
+  - Another account: `/?auth_error=private`, no session.
+  - Bad token or CSRF (double-submit `g_csrf_token` cookie == body): `/?auth_error=failed`, no session.
+  - `readAuthError()` maps `private`/`failed` and strips `auth_error` via `history.replaceState`.
+  - main.ts: `isAuthConfigured()` (setup hint naming VITE_GOOGLE_CLIENT_ID), then `readAuthError()`, then `getCurrentUser()`.
+  - Enforced by server-api, invariants.
+- I11e Session cookie: `fa_session` = 32 random bytes in base64url (43 chars); HttpOnly, SameSite=Lax, Path=/, Max-Age=2592000, Secure in production. Stored server-side by sha256. Logout and delete-all invalidate it server-side; unknown or forged cookies get 401. - server-api, invariants. **Manual: M-M0e, M-M0f.**
+- I11f CSRF on the API: every POST/PUT/PATCH/DELETE except `/api/auth/google` needs `X-Requested-With: fashion-assistant` (403 otherwise). The client sends it on every write with `credentials: "same-origin"`. - server-api, client-server, invariants.
+- I11g Route contract: every request the client makes matches the CONTRACTS-v2 route table (method + path). All protected routes return 401 without a session; unknown `/api` routes return 404 JSON `{ error, message }`. - client-server, server-api.
+- I11h Offline outbox:
+  - Offline, `saveScan` returns a client id matching `^[A-Za-z0-9_-]{1,64}$` and stores the scan in `fa.outbox`.
+  - On `online` (and at app start) it POSTs `/api/scans` with `clientId`. The server uses clientId as the doc id, so a re-flush creates no duplicate.
+  - The outbox is emptied after success.
+  - Enforced by client-server, server-api.
+- I11i Delete all: `DELETE /api/me/data` removes users/{uid} and all subcollections plus ALL of that uid's sessions (other devices are logged out too). The client then clears the outbox and `fa.deviceId`. Throws when offline. - server-api, client-server. **Manual: M-M5c.**
+- I11j deviceId: a v4 UUID in localStorage `fa.deviceId`, stable until cleared. - invariants.
+- I11k Server static serving:
+  - MIME types: .wasm application/wasm, .webmanifest application/manifest+json, .task/.tflite application/octet-stream.
+  - Caching: no-cache for index.html and sw.js; immutable for /assets/*.
+  - gzip for text types when accepted.
+  - SPA fallback only for extension-less non-/api GETs.
+  - Path traversal is impossible (encoded `..`, `%2f`, `%5c` tried).
+  - Enforced by server-api.
+- I11l Security headers on HTML:
+  - Content-Security-Policy with script-src allowing https://accounts.google.com and `'wasm-unsafe-eval'`; frame-src and style-src allowing https://accounts.google.com; connect-src 'self'; no wildcard script source.
+  - `X-Content-Type-Options: nosniff`.
+  - NO `Cross-Origin-Opener-Policy: same-origin` (breaks GIS).
+  - Enforced by server-api.
+- I11m Server code runs on Node 24 type stripping: erasable syntax only; relative imports end in `.ts`; it imports only node:* modules, `@google-cloud/firestore`, `google-auth-library`, sibling server files and `src/types.ts`. - invariants, tsconfig.server.json (G1).
 
 **Rules and deployment files (orchestrator)**
-- I12a firestore.rules: rules_version '2'; a single `allow read, write` on `/users/{uid}/{document=**}` gated on `isAllowedUser() && request.auth.uid == uid`; email == jlivanramirez7@gmail.com, email_verified == true, sign_in_provider == 'google.com'; no other email, no `if true`, no time-based rule. - config-files.
-- I12b nginx: listen 8080; SPA fallback; sw.js no-cache; `/__/auth/` and `/__/firebase/` proxy_pass to https://fashionassitant.firebaseapp.com with proxy_ssl_server_name on and Host header; NO Cross-Origin-Opener-Policy. - config-files.
-- I12c Dockerfile: node:22 build (scripts copied before npm ci), then nginx serving dist on 8080. - config-files.
-- I12d vite.config: `navigateFallbackDenylist: [/^\/__\//]`; build input index.html only; manifest standalone + portrait + 3 icons (maskable); MediaPipe /models/ and /wasm/ CacheFirst, not in globPatterns; basicSsl dev only. - config-files.
-- I12e Env files: all 7 VITE_* keys, db id, project, allowed email. Dev auth domain = fashionassitant.firebaseapp.com. **Prod auth domain must be changed to the run.app host after the first deploy (M0 manual step M-M0b); QA does not fail on it before then.**
+- I12a firestore.rules: rules_version '2', one catch-all `match /{document=**} { allow read, write: if false; }`, nothing else. The server's service account bypasses rules via IAM. - config-files. **Manual: M-M0j (rules actually deployed to the named db).**
+- I12b Firebase is gone: no firebase.json, .firebaserc, firestore.indexes.json or nginx.conf; no firebase package (package.json or node_modules); no "firebase" in src/ or server/ code. - config-files, bundle.
+- I12c Dockerfile:
+  - Build stage: two node:24 stages; scripts copied before `npm ci`; `npm run build`; the asset verify step (`test -s` on the 3 models and `dist/wasm/*.wasm`) runs after the build; `npm prune --omit=dev`.
+  - Runtime stage: NODE_ENV=production, PORT=8080, EXPOSE 8080, `USER node`; copies dist, server, src/types.ts, .env.production, node_modules and package.json; `CMD ["node","server/index.ts"]`; no nginx.
+  - .dockerignore keeps server/src/scripts/.env.production.
+  - Enforced by config-files.
+- I12d vite.config:
+  - `navigateFallbackDenylist: [/^\/api\//]`; dev proxy `/api -> http://localhost:8080`.
+  - globIgnores debugCapture/debug/wasm; build input index.html only.
+  - Manifest standalone + portrait + maskable icon; models/wasm runtime CacheFirst.
+  - Enforced by config-files.
+- I12e Env files: VITE_GOOGLE_CLIENT_ID (public; a `*.apps.googleusercontent.com` id when set), VITE_ALLOWED_EMAIL, FIRESTORE_DATABASE_ID and GOOGLE_CLOUD_PROJECT (server-only, never VITE_); no Firebase keys; no secrets (no client_secret/GOCSPX). `.env.development` has `DATA_BACKEND=memory`; production defaults to firestore. - config-files.
+- I12f Server config defaults: database `fashionassitant-db`, project `fashionassitant`, PORT 8080, memory backend outside production; falls back to `.env.production`/`.env.development`; ALLOWED_EMAIL lowercased. - invariants.
+- I12g Scripts: `typecheck` runs both tsconfigs; `build` = `npm run typecheck && vite build`; `start` = `node server/index.ts`; no `deploy:rules`. - config-files.
 
 **Dev-only code (E, F)**
 - I13a No static import of `src/dev/**` or `fflate` outside src/dev. The only dynamic import (`src/ui/debug.ts`) is guarded by `import.meta.env.DEV || ?debug=1`, and `debugEnabled()` also checks the host. - invariants.
-- I13b Bundle: replay.html and replay code are never in dist. debugCapture/fflate may exist ONLY in a lazily loaded chunk, never in the entry chunk or its static imports. sw.js contains the /__/ denylist and does not precache models; bundle contains the db id + email, no emulator wiring; entry static graph < 1.5 MiB (MediaPipe lazy-loaded; D's `src/vision/index.ts` loads tasks-vision lazily). - bundle.test.ts.
+- I13b Bundle:
+  - replay.html and replay code are never in dist.
+  - debugCapture/fflate exist ONLY in a lazily loaded chunk, never reachable statically from the entry chunk.
+  - sw.js denies `/api/` navigations and precaches no models, no wasm loaders and no dev chunks.
+  - No Firebase, server libraries, db id or client secret; GIS URL, `/api/auth/google` and the allowed email are present.
+  - The 3 models and the wasm ship in dist; entry static graph < 1.5 MiB.
+  - Enforced by bundle.test.ts.
 - I13c Spoken and on-screen text never says "turn left/right" (it names the body part facing the phone). - invariants.
 
 ---------------------------------------------------------------------------
@@ -95,16 +158,39 @@ Each line: invariant - who must keep it - where it is enforced.
 
 Record the result of each run in the regression log (d). "Pass" means every expected result happened.
 
-### M0 - scaffolding, sign-in, deploy
-- **M-M0a Deploy and helper.** `npm run deploy`; open `https://<run.app host>/__/auth/handler`. Expected: the Firebase auth handler page, NOT the app.
-- **M-M0b Second-pass config.** Set `VITE_FIREBASE_AUTH_DOMAIN=<run.app host>` in .env.production, add the OAuth redirect URI `https://<host>/__/auth/handler` and the authorized domain, then redeploy. Expected: the bundle contains the run.app host.
-- **M-M0c iOS installed PWA sign-in.** iPhone Safari: open the URL, Share > Add to Home Screen, open the icon, then Sign in with Google (jlivanramirez7@gmail.com). Expected: the redirect returns to the installed app signed in, showing Home. Sign out, then sign in again: same result.
-- **M-M0d Android Chrome sign-in.** Same as M-M0c in Chrome. Expected: signed in, Home shown.
-- **M-M0e Refusal.** Sign in with another Google account. Expected: "This app is private.", signed out, no Firestore data visible. In the Firestore console no new users/{uid} doc for that account is written.
-- **M-M0f Firestore round trip.** Run a scan (or save a test scan). Expected: a doc appears under `users/{uid}/scans` in database **fashionassitant-db** (not "(default)"), and reopening the app reads it.
+### M0 - scaffolding, sign-in, deploy (v2: GIS + Node server, no Firebase)
+- **M-M0a OAuth client setup.**
+  1. In Google Cloud console > APIs & Services > OAuth consent screen, publishing status "Testing" with test user jlivanramirez7@gmail.com (or In production).
+  2. Under Credentials > Create OAuth client ID > Web application, set Authorized JavaScript origins = `https://<run.app host>` and `http://localhost:5173`/`https://localhost:5173` (and the LAN dev host if used). Authorized redirect URIs are NOT needed for the GIS redirect flow, since `login_uri` is checked against the origins; if GIS reports `redirect_uri_mismatch`, add `https://<host>/api/auth/google`.
+  3. Put the client id (`...apps.googleusercontent.com`, public) in VITE_GOOGLE_CLIENT_ID in .env.production and .env.development. Never put a client secret anywhere.
+
+  Expected: the app shows the GIS "Sign in with Google" button, not the "not configured" hint.
+- **M-M0b Cloud Run service account.**
+  1. `gcloud run services describe fashion-assistant --region us-central1 --format='value(spec.template.spec.serviceAccountName)'`.
+  2. That account has `roles/datastore.user` on project fashionassitant (`gcloud projects get-iam-policy fashionassitant`).
+  3. Prefer a dedicated SA (`--service-account fa-run@...`) over the default compute SA, which is Editor.
+
+  Expected: `/api/health` returns `{ok:true}`; after sign-in, saving a scan writes `users/<sub>/scans/<id>` in database **fashionassitant-db** (not "(default)") and the Cloud Run logs show no PERMISSION_DENIED.
+- **M-M0c iOS installed PWA sign-in.**
+  1. In iPhone Safari open the URL, then Share > Add to Home Screen.
+  2. Open the icon and tap Sign in with Google (jlivanramirez7@gmail.com).
+
+  Expected: Google's page opens and returns to the installed app (not a Safari tab), signed in, showing Home. Sign out, then sign in again: same result. If iOS opens the redirect in Safari instead of the PWA, record it: the cookie then lands in Safari's jar, not the PWA's.
+- **M-M0d Android Chrome sign-in.** Same as M-M0c in Chrome, both in a tab and as an installed app. Expected: signed in, Home shown.
+- **M-M0e Refuse another account.** Sign in with another Google account. Expected:
+  - The app shows "This app is private." (`?auth_error=private`, then the URL is cleaned).
+  - No `fa_session` cookie is set (DevTools > Application > Cookies).
+  - `curl https://<host>/api/scans` returns 401.
+  - Firestore has no users/{sub} doc and no session doc for that account.
+- **M-M0f Cookie persistence and logout.** Sign in, close the app/PWA completely, reopen the next day. Expected:
+  - Still signed in (30-day `fa_session`, HttpOnly, Secure, SameSite=Lax).
+  - Sign out: cookie cleared, the sessions/{hash} doc deleted, reopen shows Sign in.
+  - Remove the allowlist email on the server env and redeploy: the existing session gets 401 on the next request.
 - **M-M0g Budget alert** exists in Billing > Budgets (10 USD, 50%/100%).
-- **M-M0h Not configured.** Run a build with an empty API key. Expected: a clear setup message, no crash.
-- **M-M0i Rules emulator.** `firebase emulators:start` (or a rules unit test). Expected: the allowed account can read/write its own subtree; another uid, another email, an unverified email and anonymous requests are denied.
+- **M-M0h Not configured.** Build with an empty VITE_GOOGLE_CLIENT_ID. Expected: the "Sign-in is not configured yet - set VITE_GOOGLE_CLIENT_ID ..." message, no crash.
+- **M-M0i Security headers in production.** `curl -sI https://<host>/` shows Content-Security-Policy (accounts.google.com in script/frame/style, 'wasm-unsafe-eval'), `X-Content-Type-Options: nosniff`, and no `Cross-Origin-Opener-Policy: same-origin`. In the browser console there are no CSP violations during sign-in or during Processing (MediaPipe wasm + models).
+- **M-M0j Deny-all rules deployed.** The Firestore console (database fashionassitant-db) > Rules shows the deny-all rules. The Firebase CLI is gone, so paste them in the console or use the Rules API. A database created with gcloud may have different default rules, so check rather than assume.
+- **M-M0k Models served in production.** `curl -sI https://<host>/models/pose_landmarker_heavy.task` returns 200, application/octet-stream, about 30 MB; `/wasm/vision_wasm_internal.wasm` returns application/wasm. The Docker build fails if the models are missing (asset verify step).
 
 ### M1 - capture skeleton
 - **M-B1 Permissions on one tap.** Fill in Setup, then tap Start. Expected: camera + motion prompts (iOS) from that one tap; voice speaks afterwards; no further prompts.
@@ -142,8 +228,14 @@ Record the result of each run in the regression log (d). "Pass" means every expe
 ### M5 - results and history
 - **M-M5a** Results: every measurement grouped (Tops, Bottoms, Dresses & one-pieces, Shoes, General); chest label by body type; in/cm toggle saved per user; Copy all pastes a readable list; tapping a row shows the body diagram; "Retake amber/red" retakes only the needed steps.
 - **M-M5b** History: newest first with subject label; tapping reopens Results; swipe to delete one scan.
-- **M-M5c** "Delete all my data": a confirm dialog with the exact text appears, then the Firestore console shows `users/{uid}` empty (no scans/devices/settings docs), reload shows no cached history, and `fa.deviceId` is gone from localStorage.
-- **M-M5d Offline.** Airplane mode after capture. Expected: the scan saves locally and syncs when back online (persistent cache); the app shell loads offline (service worker).
+- **M-M5c** "Delete all my data": a confirm dialog with the exact text appears. Afterwards:
+  - The Firestore console shows `users/{sub}` empty (no scans/devices/settings docs) and no `sessions` docs for that sub.
+  - The app reloads to Sign in, and a second signed-in device is logged out too.
+  - `fa.deviceId` and `fa.outbox` are gone from localStorage.
+- **M-M5d Offline.** Turn on airplane mode after capture. Expected:
+  - Results show and the scan sits in `fa.outbox` (DevTools > Application > Local Storage); the app shell loads offline (service worker).
+  - Back online: the scan appears once in History and once in Firestore (doc id = the client id).
+  - Toggle airplane mode twice more: still exactly one copy.
 
 ---------------------------------------------------------------------------
 
@@ -166,13 +258,28 @@ Record the result of each run in the regression log (d). "Pass" means every expe
 | 2026-10-10 (cycle 2) | G3 npm run build | PASS | - | Built in 2.5 s; Vite warns firebase chunk 635 kB (> 500 kB); 45 precache entries (1.9 MB). |
 | 2026-10-10 (cycle 2) | G4 bundle | PASS 9/9 | E, F, orch. | No replay in dist; debugCapture + fflate only in the lazy chunk `debugCapture-*.js`; sw.js has the /__/ denylist; db id + email baked in; models + wasm present. WARN: debugCapture-*.js, debug-*.js and wasm/*.js loaders are in the SW precache. |
 | 2026-10-10 (cycle 2) | Smoke: vite preview :4173 (HTTPS via basicSsl) | PASS | - | / 200 text/html; /sw.js 200 text/javascript; /manifest.webmanifest 200 application/manifest+json; /device-profiles.json 200 application/json (9 KB); /wasm/vision_wasm_internal.wasm 200 application/wasm; HEAD /models/pose_landmarker_lite.task 200, 5.78 MB, NO content-type (nginx will send application/octet-stream - fine). /__/auth/handler returns index.html in preview (expected: no proxy; nginx handles it in production, manual test M-M0a). |
+| 2026-10-10 (v2 phase 1) | G1 typecheck (client + server tsconfig) | PASS (0 errors) | all | Run while A2/E2/S were still writing. |
+| 2026-10-10 (v2 phase 1) | QA suite excl. bundle | PASS 183/183, 8 files | all | New: server-api (live HTTP, memory store + fake GIS verifier), client-server (A2 modules against the real routes, outbox end to end), v2 config-files/contract/invariants. Bundle test NOT run: dist/ is the stale v1 (Firebase) build, so rebuild first (G3). |
+| 2026-10-10 (v2 phase 1) | Server API: unauthenticated DELETE with a JSON body | NOTE | S | `DELETE /api/scans/abc` with body `{}` and no session returned 400 (body rejected) before the 401 auth check. Without a body it is 401. Harmless, but auth should run before body validation. |
+| 2026-10-10 (v2 cycle 3) | QA harness fix | FIXED | QA | `_server.ts raw()` sent bodies without Content-Length, so Node's parser rejected a DELETE body with 400 before the app ran. That was my bug, not S's. Now sets Content-Length; server-api sends `{}` on every non-GET and confirms 401 comes before body parsing. The v2-phase-1 NOTE above is withdrawn. |
+| 2026-10-10 (v2 cycle 3) | G1 npm run typecheck | PASS (0 errors) | all | client + server tsconfig |
+| 2026-10-10 (v2 cycle 3) | G3 npm run build | PASS | - | Built in 1.2 s; no chunk-size warning (firebase gone); precache 40 entries / 281 KiB (was 1.9 MB: wasm loaders + dev chunks now excluded); dist 89 MB (models 51 MB + wasm 38 MB). |
+| 2026-10-10 (v2 cycle 3) | G2 npx vitest run | PASS 599/599, 40 files | all | QA suite 192/192 (9 files) incl. server-api, client-server, bundle. |
+| 2026-10-10 (v2 cycle 3) | G4 bundle | PASS 9/9 | all | No firebase/server libs/db id/secret in dist; GIS URL + /api/auth/google present; sw denies /api/; no dev chunks or wasm precached; models + wasm in dist. |
+| 2026-10-10 (v2 cycle 3) | Smoke: `NODE_ENV=production DATA_BACKEND=memory COOKIE_SECURE=false PORT=18431 node server/index.ts` | PASS | S | Starts with an empty VITE_GOOGLE_CLIENT_ID (WARNING logged, no crash). Responses: `/api/health` 200 `{"ok":true}`; `/` 200 text/html no-cache; `/sw.js` 200 no-cache; `/manifest.webmanifest` 200 application/manifest+json; `/device-profiles.json` 200; HEAD models 200 application/octet-stream (5.8 / 30.7 / 16.4 MB); `/wasm/vision_wasm_internal.wasm` 200 application/wasm; `/assets/*.js` gzip + immutable; `/api/me` 401 JSON; `/history` SPA 200; `/../package.json` and `/%2e%2e/package.json` 404. Headers on /: CSP (script-src 'self' 'wasm-unsafe-eval' accounts.google.com; frame/style/connect/form-action allow accounts.google.com; object-src none; frame-ancestors none), nosniff, X-Frame-Options DENY, Referrer-Policy; NO COOP. Unauthenticated `/api/nope` returns 401 (auth runs before routing); with a session it returns 404 JSON. |
 | 2026-10-10 (cycle 2) | dist size | 89 MB | orch. | public/ is copied into dist: models 51 MB (3 files), wasm 38 MB (6 files incl. nosimd), assets 974 KB. Models are served in production only if `npm ci` inside Docker downloads them (setup-assets only warns on failure). |
 
 ---------------------------------------------------------------------------
 
 ## (e) Per-team feedback
 
-**A auth-data** - all QA checks pass. Notes: ALLOWED_EMAIL fails closed when empty (good). `src/data/convert.ts` round-trips all 23 keys and carries no binary data.
+**A2 client-data (v2)** - all QA checks pass, including the live round trip against the server (user, scans with all 23 keys + tape, devices, factors, getCurrentUser, signOutUser, deleteAllMyData) and the offline outbox (`fa.outbox`, clientId, flush on `online`, idempotent re-flush, emptied after success). Notes:
+- `readAuthError` maps unknown `auth_error` values to "failed" (acceptable).
+- Firebase files and exports are removed.
+
+**S server (v2)** - all QA checks pass: auth/CSRF/cookie, 401/403 rules (auth before body parsing, confirmed after the QA harness fix), idempotent clientId, image-data rejection, delete-all incl. sessions, static MIME/cache/gzip/SPA/traversal, CSP + no COOP. The production-mode smoke run passes. Optional: no `Strict-Transport-Security` header; Cloud Run is HTTPS-only, so it is low value.
+
+**A auth-data (v1, superseded by A2)** - ALLOWED_EMAIL fails closed when empty. The Firestore mapping now lives in `server/store-firestore.ts` (round-trips all 23 keys, plain data only).
 
 **B device-capture** - all QA checks pass. Notes:
 - The focal formula now uses a 4:3 sensor crop (orchestrator-approved). It differs from designdoc section 4 (video diagonal), so the doc should be updated. The height solve corrects either way.
@@ -207,5 +314,16 @@ Notes:
 3. **Firebase chunk is 635 kB** (Vite > 500 kB warning). Acceptable for v1; it is lazily imported, not in the entry graph.
 4. **Side-view foot offset.** C assumes the near-foot edge is 0.025 H (about 4.4 cm) in front of the body plane, which is half a foot width. With the feet together the outer edge is closer to one foot width (about 9-10 cm) from the midline. Impact: about 2% on side-view distance, which affects only `scaleAgreementPct`, not measurements (they are height-scaled). Validate on device or replay (M-M2b).
 
+Status of the cycle-2 decisions under v2:
+- 1: done (Dockerfile asset verify).
+- 2: done (globIgnores; now a hard bundle check).
+- 3: moot (no Firebase).
+- 4: still open.
+
+### Open decisions for the orchestrator (v2)
+5. **Rules deployment path.** firebase-tools is gone, so nothing in the repo deploys `firestore.rules` to `fashionassitant-db`. Either document a console/REST step (manual test M-M0j) or drop the file. The server's service account bypasses rules anyway; the rules only matter if someone ever ships a client SDK.
+6. **Cloud Run service account.** `npm run deploy` does not pass `--service-account`, so Cloud Run uses the default compute SA (project Editor). Suggest a dedicated SA with only `roles/datastore.user` (M-M0b).
+7. **iOS installed-PWA redirect.** The GIS redirect is a top-level POST to `/api/auth/google`. On some iOS versions the home-screen app opens Google sign-in in Safari, so the cookie would land in Safari's jar. This must be verified on a device (M-M0c) before M0 exit.
+
 ### Checks re-run every cycle
-G1 tsc, G2 all tests, G3 build, G4 bundle; within G2: contract, conventions, spec-coverage, invariants, pipeline-e2e, config-files. Any new export or contract change must be added to `tests/qa/contract.test.ts` and this file.
+G1 typecheck (both tsconfigs), G3 build, G2 all tests, G4 bundle; within G2: contract, conventions, spec-coverage, invariants, pipeline-e2e, config-files, server-api, client-server. Then a smoke run of `npm start` (or `vite preview`) serving dist. Any new export, route or contract change must be added to `tests/qa/contract.test.ts` / `_server.ts` ROUTES and this file.

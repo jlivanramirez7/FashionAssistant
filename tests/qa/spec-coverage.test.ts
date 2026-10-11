@@ -85,12 +85,12 @@ function scanWith(over: Partial<ScanDoc> = {}): ScanDoc {
   };
 }
 
-describe("[A auth-data] Firestore mapping keeps every key and never stores images", () => {
-  const CONVERT = "src/data/convert";
+describe("[S server] Firestore mapping (server/store-firestore.ts) keeps every key and never stores images", () => {
+  const CONVERT = "server/store-firestore";
   it("scanToFirestore -> scanFromFirestore round-trips all 23 keys (measurements, raw, tape)", async () => {
-    const c = await loadModule(CONVERT, "A auth-data");
-    const to = fn(c, "scanToFirestore", "A auth-data", CONVERT);
-    const from = fn(c, "scanFromFirestore", "A auth-data", CONVERT);
+    const c = await loadModule(CONVERT, "S server");
+    const to = fn(c, "scanToFirestore", "S server", CONVERT);
+    const from = fn(c, "scanFromFirestore", "S server", CONVERT);
     const scan = scanWith({ tapeMeasurements: { ...scanWith().rawMeasurements } });
     const data = to(scan, { toTimestamp: (ms: number) => ({ toMillis: () => ms }) });
     const back: ScanDoc = from("id1", data);
@@ -102,8 +102,8 @@ describe("[A auth-data] Firestore mapping keeps every key and never stores image
     expect(back.createdAt).toBe(scan.createdAt);
   });
   it("serialized scan contains only plain JSON-like data (no Blob/ImageData/typed arrays/data: URLs)", async () => {
-    const c = await loadModule(CONVERT, "A auth-data");
-    const to = fn(c, "scanToFirestore", "A auth-data", CONVERT);
+    const c = await loadModule(CONVERT, "S server");
+    const to = fn(c, "scanToFirestore", "S server", CONVERT);
     const data = to(scanWith(), { toTimestamp: (ms: number) => ({ toMillis: () => ms }) });
     const offenders: string[] = [];
     const walk = (v: unknown, path: string) => {

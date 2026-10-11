@@ -25,6 +25,9 @@ export type Team =
   | "D vision"
   | "E ui-flow"
   | "F dev-tools"
+  | "S server"
+  | "A2 client-data"
+  | "E2 ui"
   | "orchestrator";
 
 // Loosely typed module namespace: QA checks shapes at runtime.

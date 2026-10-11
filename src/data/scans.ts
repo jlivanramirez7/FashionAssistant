@@ -1,40 +1,69 @@
-// users/{uid}/scans/{scanId} (design doc section 11).
+// Scans via the server API (docs/CONTRACTS-v2.md). `uid` params are kept
+// for compatibility and ignored: the server uses the session.
+// Scans saved offline live in the outbox until flushed; the functions here
+// treat outbox scans like stored ones.
 
-import { collection, deleteDoc, doc, getDoc, getDocs, orderBy, query, setDoc, updateDoc } from "firebase/firestore";
 import type { ScanDoc } from "../types";
-import { getFirebase } from "../auth/firebase";
-import { scanFromFirestore, scanPatchToFirestore, scanToFirestore, sortScansNewestFirst } from "./convert";
-import { writeHelpers } from "./sdk";
-import { commitWrite } from "./write";
+import { api, ApiError, isOffline, NetworkError, seg } from "./api";
+import { applyScanPatch, scanPatchBody, sortScansNewestFirst } from "./serialize";
+import {
+  enqueueScan,
+  findOutboxScan,
+  newClientId,
+  readOutbox,
+  removeOutboxScan,
+  replaceOutboxScan,
+} from "./outbox";
 
-function scansCol(uid: string) {
-  return collection(getFirebase().db, "users", uid, "scans");
+export { flushOutbox } from "./outbox";
+
+/**
+ * Saves a new scan and returns its id. Never loses the scan: offline or on a
+ * network error it is queued in the outbox (id = clientId) and synced later.
+ */
+export async function saveScan(_uid: string, scan: ScanDoc): Promise<string> {
+  const clientId = newClientId();
+  const { id: _id, ...body } = scan;
+  if (isOffline()) return enqueueScan(scan, clientId);
+  try {
+    const res = await api<{ id: string }>("POST", "/api/scans", { ...body, clientId });
+    return res.id;
+  } catch (err) {
+    if (err instanceof NetworkError) return enqueueScan(scan, clientId);
+    throw err;
+  }
 }
 
-/** Saves a new scan (auto id, generated locally) and returns the id. Works offline: syncs later. */
-export async function saveScan(uid: string, scan: ScanDoc): Promise<string> {
-  const ref = doc(scansCol(uid));
-  await commitWrite(setDoc(ref, scanToFirestore(scan, writeHelpers)));
-  return ref.id;
+export async function updateScan(_uid: string, id: string, patch: Partial<ScanDoc>): Promise<void> {
+  const queued = findOutboxScan(id);
+  if (queued && replaceOutboxScan(id, applyScanPatch(queued, patch))) return;
+  const body = scanPatchBody(patch);
+  if (Object.keys(body).length === 0) return;
+  await api("PATCH", `/api/scans/${seg(id)}`, body);
 }
 
-export async function updateScan(uid: string, id: string, patch: Partial<ScanDoc>): Promise<void> {
-  const data = scanPatchToFirestore(patch, writeHelpers);
-  if (Object.keys(data).length === 0) return;
-  await commitWrite(updateDoc(doc(scansCol(uid), id), data));
+export async function getScan(_uid: string, id: string): Promise<ScanDoc | null> {
+  const queued = findOutboxScan(id);
+  if (queued) return queued;
+  try {
+    return await api<ScanDoc>("GET", `/api/scans/${seg(id)}`);
+  } catch (err) {
+    if (err instanceof ApiError && err.status === 404) return null;
+    throw err;
+  }
 }
 
-export async function getScan(uid: string, id: string): Promise<ScanDoc | null> {
-  const snap = await getDoc(doc(scansCol(uid), id));
-  return snap.exists() ? scanFromFirestore(snap.id, snap.data()) : null;
+/** All scans newest first, including scans still waiting in the outbox. */
+export async function listScans(_uid: string): Promise<ScanDoc[]> {
+  const server = (await api<ScanDoc[]>("GET", "/api/scans")) ?? [];
+  const ids = new Set(server.map((s) => s.id));
+  const pending = readOutbox()
+    .filter((e) => !ids.has(e.clientId))
+    .map((e) => ({ ...e.scan, id: e.clientId }));
+  return sortScansNewestFirst([...server, ...pending]);
 }
 
-/** All scans, newest first. */
-export async function listScans(uid: string): Promise<ScanDoc[]> {
-  const snap = await getDocs(query(scansCol(uid), orderBy("createdAt", "desc")));
-  return sortScansNewestFirst(snap.docs.map((d) => scanFromFirestore(d.id, d.data())));
-}
-
-export async function deleteScan(uid: string, id: string): Promise<void> {
-  await commitWrite(deleteDoc(doc(scansCol(uid), id)));
+export async function deleteScan(_uid: string, id: string): Promise<void> {
+  if (removeOutboxScan(id)) return;
+  await api("DELETE", `/api/scans/${seg(id)}`);
 }

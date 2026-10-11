@@ -3,7 +3,7 @@
 // arity = Function.length range). A missing module fails ONLY its own
 // tests, with the owner team in the message.
 import { describe, expect, it } from "vitest";
-import { exists, loadModule, type Team } from "./_helpers";
+import { exists, loadModule, readText, type Team } from "./_helpers";
 
 type ExportSpec =
   | { name: string; kind: "function"; arity: [number, number] }
@@ -20,23 +20,33 @@ const v = (name: string, kind: "string" | "object" | "number"): ExportSpec => ({
 
 const CONTRACT: ModuleSpec[] = [
   // ---------------------------------------------------------------- A
-  { team: "A auth-data", file: "src/config", exports: [
-    v("firebaseConfig", "object"), v("FIRESTORE_DATABASE_ID", "string"), v("ALLOWED_EMAIL", "string"),
-    v("APP_VERSION", "string"), f("isFirebaseConfigured", 0),
+  // A2 (CONTRACTS-v2): fetch("/api/...") client; same src/data names as v1.
+  { team: "A2 client-data", file: "src/config", exports: [
+    v("GOOGLE_CLIENT_ID", "string"), v("ALLOWED_EMAIL", "string"), v("APP_VERSION", "string"), f("isAuthConfigured", 0),
   ] },
-  { team: "A auth-data", file: "src/auth/firebase", exports: [f("getFirebase", 0)] },
-  { team: "A auth-data", file: "src/auth/authGuard", exports: [
-    f("isAllowed", 1), f("finishRedirect", 0), f("signIn", 0), f("signOutUser", 0), f("watchAuth", 1),
+  { team: "A2 client-data", file: "src/auth/authGuard", exports: [
+    v("PRIVATE_MESSAGE", "string"), f("readAuthError", 0), f("renderSignInButton", 1), f("getCurrentUser", 0),
+    f("signOutUser", 0), f("isAllowed", 1),
   ] },
-  { team: "A auth-data", file: "src/data/deviceId", exports: [f("getDeviceId", 0), f("clearDeviceId", 0)] },
-  { team: "A auth-data", file: "src/data/user", exports: [f("getUserDoc", 1), f("saveUserDoc", 2)] },
-  { team: "A auth-data", file: "src/data/scans", exports: [
-    f("saveScan", 2), f("updateScan", 3), f("getScan", 2), f("listScans", 1), f("deleteScan", 2),
+  { team: "A2 client-data", file: "src/data/deviceId", exports: [f("getDeviceId", 0), f("clearDeviceId", 0)] },
+  { team: "A2 client-data", file: "src/data/user", exports: [f("getUserDoc", 0, 1), f("saveUserDoc", 1, 2)] },
+  { team: "A2 client-data", file: "src/data/scans", exports: [
+    f("saveScan", 2), f("updateScan", 3), f("getScan", 2), f("listScans", 0, 1), f("deleteScan", 2),
   ] },
-  { team: "A auth-data", file: "src/data/devices", exports: [f("getDeviceRecord", 2), f("saveDeviceRecord", 2)] },
-  { team: "A auth-data", file: "src/data/settings", exports: [f("getCorrectionFactors", 1), f("saveCorrectionFactors", 2)] },
-  { team: "A auth-data", file: "src/data/validation", exports: [f("validationStats", 1), f("computeCorrectionFactors", 1, 2)] },
-  { team: "A auth-data", file: "src/data/deleteAll", exports: [f("deleteAllMyData", 1)] },
+  { team: "A2 client-data", file: "src/data/devices", exports: [f("getDeviceRecord", 2), f("saveDeviceRecord", 2)] },
+  { team: "A2 client-data", file: "src/data/settings", exports: [f("getCorrectionFactors", 0, 1), f("saveCorrectionFactors", 2)] },
+  { team: "A2 client-data", file: "src/data/validation", exports: [f("validationStats", 1), f("computeCorrectionFactors", 1, 2)] },
+  { team: "A2 client-data", file: "src/data/deleteAll", exports: [f("deleteAllMyData", 0, 1)] },
+  // ---------------------------------------------------------------- S (server; Node 24, imported here via vite)
+  { team: "S server", file: "server/config", exports: [] },
+  { team: "S server", file: "server/http", exports: [] },
+  { team: "S server", file: "server/static", exports: [] },
+  { team: "S server", file: "server/auth", exports: [] },
+  { team: "S server", file: "server/api", exports: [] },
+  { team: "S server", file: "server/validate", exports: [] },
+  { team: "S server", file: "server/store", exports: [] },
+  { team: "S server", file: "server/store-memory", exports: [] },
+  { team: "S server", file: "server/store-firestore", exports: [] },
   // ---------------------------------------------------------------- B
   { team: "B device-capture", file: "src/device/profiles", exports: [
     v("GENERIC_SPEC", "object"), f("loadDeviceSpecs", 0), f("matchSpec", 2),
@@ -126,6 +136,23 @@ describe("module contract (docs/CONTRACTS.md)", () => {
       await loadModule(`src/ui/parts/${p}`, "E ui-flow");
     }, 60_000);
   }
+
+  it("[A2 client-data] removed v1 Firebase exports are gone", async () => {
+    const cfg = await loadModule("src/config", "A2 client-data");
+    const g = await loadModule("src/auth/authGuard", "A2 client-data");
+    const stale = [
+      ...["firebaseConfig", "FIRESTORE_DATABASE_ID", "isFirebaseConfigured"].filter((n) => n in cfg).map((n) => `src/config.ts ${n}`),
+      ...["finishRedirect", "signIn", "watchAuth", "getFirebase"].filter((n) => n in g).map((n) => `src/auth/authGuard.ts ${n}`),
+    ];
+    expect(stale, `[A2 client-data] remove: ${stale.join(", ")}`).toEqual([]);
+  }, 60_000);
+
+  it("[S server] server/index.ts exists; some server module exports createApp(deps)", () => {
+    expect(exists("server/index.ts"), "[S server] missing server/index.ts").toBe(true);
+    const files = ["server/api.ts", "server/http.ts", "server/app.ts", "server/index.ts"].filter(exists);
+    const ok = files.some((p) => /export\s+(async\s+)?(function|const)\s+createApp\b/.test(readText(p)));
+    expect(ok, "[S server] no createApp export in server/api.ts|http.ts|app.ts|index.ts").toBe(true);
+  });
 
   it("[E ui-flow] src/main.ts and src/ui/styles.css exist", () => {
     const missing = ["src/main.ts", "src/ui/styles.css"].filter((p) => !exists(p));

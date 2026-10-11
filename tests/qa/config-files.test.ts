@@ -1,20 +1,11 @@
-// QA: deployment / config files (design doc sections 9-12).
+// QA: deployment / config files for v2 (docs/CONTRACTS-v2.md: no Firebase;
+// Node 24 server on Cloud Run is the only Firestore client).
 import { describe, expect, it } from "vitest";
 import { inflateSync } from "node:zlib";
 import { readFileSync } from "node:fs";
-import {
-  ALLOWED_EMAIL, DB_ID, FIREBASEAPP_HOST, PROJECT_ID, exists, readText, repoPath, stripComments,
-} from "./_helpers";
+import { ALLOWED_EMAIL, DB_ID, PROJECT_ID, exists, listFiles, readText, repoPath, stripComments } from "./_helpers";
 
-const ENV_KEYS = [
-  "VITE_FIREBASE_API_KEY",
-  "VITE_FIREBASE_AUTH_DOMAIN",
-  "VITE_FIREBASE_PROJECT_ID",
-  "VITE_FIREBASE_APP_ID",
-  "VITE_FIREBASE_MESSAGING_SENDER_ID",
-  "VITE_FIRESTORE_DATABASE_ID",
-  "VITE_ALLOWED_EMAIL",
-];
+const ENV_KEYS = ["VITE_GOOGLE_CLIENT_ID", "VITE_ALLOWED_EMAIL", "FIRESTORE_DATABASE_ID", "GOOGLE_CLOUD_PROJECT"];
 
 function parseEnv(text: string): Record<string, string> {
   const out: Record<string, string> = {};
@@ -27,178 +18,163 @@ function parseEnv(text: string): Record<string, string> {
   return out;
 }
 
-describe("firestore.rules (section 11)", () => {
-  const rules = readText("firestore.rules");
-  const code = rules.replace(/\/\/.*$/gm, "");
+describe("Firebase is gone (CONTRACTS-v2)", () => {
+  it("[orchestrator] firebase.json, .firebaserc, firestore.indexes.json, nginx.conf are deleted", () => {
+    const present = ["firebase.json", ".firebaserc", "firestore.indexes.json", "nginx.conf"].filter(exists);
+    expect(present, `[orchestrator] delete: ${present.join(", ")}`).toEqual([]);
+  });
+  it("[orchestrator] package.json: no firebase deps; runtime deps are exactly the v2 set", () => {
+    const pkg = JSON.parse(readText("package.json"));
+    const all = { ...pkg.dependencies, ...pkg.devDependencies };
+    expect(Object.keys(all).filter((k) => /firebase/i.test(k))).toEqual([]);
+    expect(Object.keys(pkg.dependencies).sort()).toEqual(["@google-cloud/firestore", "@mediapipe/tasks-vision", "fflate", "google-auth-library"]);
+    expect(exists("node_modules/firebase"), "firebase still installed in node_modules").toBe(false);
+  });
+  it("[A2/E2/S] no 'firebase' in src/ or server/ code (comments excluded)", () => {
+    const files = [...listFiles("src", (p) => p.endsWith(".ts")), ...listFiles("server", (p) => p.endsWith(".ts"))];
+    const hits = files.filter((p) => /firebase/i.test(stripComments(readText(p))));
+    expect(hits, `still referencing firebase:\n${hits.join("\n")}`).toEqual([]);
+  });
+  it("[A2 client-data] Firebase-only client files are deleted", () => {
+    const present = ["src/auth/firebase.ts", "src/data/sdk.ts", "src/data/write.ts"].filter(exists);
+    expect(present, `[A2 client-data] delete: ${present.join(", ")}`).toEqual([]);
+  });
+});
 
-  it("uses rules_version 2", () => {
+describe("firestore.rules: deny-all (the server uses IAM and bypasses rules)", () => {
+  const code = readText("firestore.rules").replace(/\/\/.*$/gm, "");
+  it("rules_version 2, a single catch-all deny", () => {
     expect(code).toMatch(/rules_version\s*=\s*['"]2['"]\s*;/);
-  });
-  it("allowlists exactly the owner email, verified, Google provider", () => {
-    expect(code).toContain(`request.auth.token.email == '${ALLOWED_EMAIL}'`);
-    expect(code).toMatch(/request\.auth\.token\.email_verified\s*==\s*true/);
-    expect(code).toMatch(/request\.auth\.token\.firebase\.sign_in_provider\s*==\s*'google\.com'/);
-    expect(code).toMatch(/request\.auth\s*!=\s*null/);
-    const emails = code.match(/[\w.+-]+@[\w.-]+/g) ?? [];
-    expect(new Set(emails)).toEqual(new Set([ALLOWED_EMAIL]));
-  });
-  it("one subtree rule users/{uid}/{document=**} gated on uid and isAllowedUser", () => {
-    expect(code).toMatch(/match\s+\/users\/\{uid\}\/\{document=\*\*\}/);
-    expect(code).toMatch(/allow\s+read\s*,\s*write\s*:\s*if\s+isAllowedUser\(\)\s*&&\s*request\.auth\.uid\s*==\s*uid\s*;/);
-    const allows = code.match(/\ballow\b/g) ?? [];
-    expect(allows.length).toBe(1);
-  });
-  it("has no open rules", () => {
-    expect(code).not.toMatch(/if\s+true/);
-    expect(code).not.toMatch(/allow\s+[\w\s,]+;\s*$/m); // allow without condition
-    expect(code).not.toMatch(/request\.time\s*</); // test-mode expiry rule
+    expect(code).toMatch(/match\s+\/\{document=\*\*\}\s*\{\s*allow\s+read\s*,\s*write\s*:\s*if\s+false\s*;\s*\}/);
+    expect((code.match(/\ballow\b/g) ?? []).length).toBe(1);
+    expect(code).not.toMatch(/if\s+true|request\.auth/);
   });
 });
 
-describe("firebase.json / .firebaserc / indexes", () => {
-  it("firebase.json targets the named database and rules file", () => {
-    const j = JSON.parse(readText("firebase.json"));
-    expect(j.firestore.database).toBe(DB_ID);
-    expect(j.firestore.rules).toBe("firestore.rules");
-    expect(j.firestore.indexes).toBe("firestore.indexes.json");
-    expect(j.emulators.auth.port).toBe(9099);
-    expect(j.emulators.firestore.port).toBe(8081);
-  });
-  it(".firebaserc default project", () => {
-    expect(JSON.parse(readText(".firebaserc")).projects.default).toBe(PROJECT_ID);
-  });
-  it("firestore.indexes.json is valid JSON", () => {
-    expect(() => JSON.parse(readText("firestore.indexes.json"))).not.toThrow();
-  });
-});
-
-describe("nginx.conf (sections 9, 10, 12)", () => {
-  const conf = readText("nginx.conf").replace(/#.*$/gm, "");
-
-  it("listens on 8080 with SPA fallback and sw.js no-cache", () => {
-    expect(conf).toMatch(/listen\s+8080\s*;/);
-    expect(conf).toMatch(/try_files\s+\$uri\s+\$uri\/\s+\/index\.html\s*;/);
-    expect(conf).toMatch(/location\s*=\s*\/sw\.js\s*\{[^}]*Cache-Control\s+"no-cache"/);
-  });
-  for (const loc of ["/__/auth/", "/__/firebase/"]) {
-    it(`proxies ${loc} to ${FIREBASEAPP_HOST}`, () => {
-      const esc = loc.replace(/\//g, "\\/");
-      const m = conf.match(new RegExp(`location\\s+${esc}\\s*\\{([^}]*)\\}`));
-      expect(m, `missing location ${loc}`).toBeTruthy();
-      const body = m![1];
-      expect(body).toMatch(new RegExp(`proxy_pass\\s+https://${FIREBASEAPP_HOST.replace(/\./g, "\\.")}\\s*;`));
-      expect(body).toMatch(/proxy_ssl_server_name\s+on\s*;/);
-      expect(body).toContain(`proxy_set_header Host ${FIREBASEAPP_HOST};`);
-    });
-  }
-  it("never sets Cross-Origin-Opener-Policy (breaks dev popup)", () => {
-    expect(conf.toLowerCase()).not.toContain("cross-origin-opener-policy");
-  });
-});
-
-describe("Dockerfile", () => {
+describe("Dockerfile (v2: Node 24 build + runtime, no nginx)", () => {
   const d = readText("Dockerfile");
-  it("multi-stage node 22 build -> nginx serving dist on 8080", () => {
-    expect(d).toMatch(/FROM\s+node:22[\w.-]*\s+AS\s+build/i);
-    expect(d).toMatch(/RUN\s+npm\s+ci/);
-    expect(d).toMatch(/RUN\s+npm\s+run\s+build/);
-    expect(d).toMatch(/FROM\s+nginx:/);
-    expect(d).toMatch(/COPY\s+nginx\.conf\s+\/etc\/nginx\/conf\.d\/default\.conf/);
-    expect(d).toMatch(/COPY\s+--from=build\s+\/app\/dist\s+\/usr\/share\/nginx\/html/);
-    expect(d).toMatch(/EXPOSE\s+8080/);
+  const stages = d.split(/^FROM\s+/m).slice(1);
+  it("two node:24 stages, no nginx", () => {
+    expect(stages.length).toBe(2);
+    for (const s of stages) expect(s).toMatch(/^node:24[\w.-]*/);
+    expect(d.toLowerCase()).not.toContain("nginx");
   });
-  it("copies scripts/ before npm ci (postinstall needs setup-assets.mjs)", () => {
-    expect(d.indexOf("COPY scripts")).toBeGreaterThan(-1);
-    expect(d.indexOf("COPY scripts")).toBeLessThan(d.indexOf("npm ci"));
+  it("build stage: scripts before npm ci, npm run build, asset verify, prune dev deps", () => {
+    const b = stages[0];
+    expect(b.indexOf("COPY scripts")).toBeGreaterThan(-1);
+    expect(b.indexOf("COPY scripts")).toBeLessThan(b.indexOf("npm ci"));
+    expect(b).toMatch(/RUN\s+npm\s+run\s+build/);
+    for (const f of ["pose_landmarker_lite.task", "pose_landmarker_heavy.task", "selfie_multiclass_256x256.tflite"]) {
+      expect(b, `asset verify must check dist/models/${f}`).toContain(`test -s dist/models/${f}`);
+    }
+    expect(b).toContain("dist/wasm/*.wasm");
+    expect(b.indexOf("dist/models")).toBeGreaterThan(b.indexOf("npm run build"));
+    expect(b).toMatch(/npm\s+prune\s+--omit=dev/);
+  });
+  it("runtime stage: NODE_ENV=production, PORT 8080, non-root, copies dist/server/types/.env.production, CMD node server/index.ts", () => {
+    const r = stages[1];
+    expect(r).toMatch(/ENV\s+NODE_ENV=production/);
+    expect(r).toMatch(/ENV\s+PORT=8080/);
+    expect(r).toMatch(/EXPOSE\s+8080/);
+    expect(r).toMatch(/USER\s+node/);
+    for (const p of ["/app/dist", "/app/server", "/app/src/types.ts", "/app/.env.production", "/app/node_modules", "/app/package.json"]) {
+      expect(r, `runtime must COPY --from=build ${p}`).toContain(`COPY --from=build ${p} `);
+    }
+    expect(r).toMatch(/CMD\s+\[\s*"node"\s*,\s*"server\/index\.ts"\s*\]/);
+  });
+  it(".dockerignore keeps server, env file, scripts and src in the build context", () => {
+    const ig = readText(".dockerignore").split(/\r?\n/).map((l) => l.trim());
+    for (const p of ["server", ".env.production", "scripts", "src"]) expect(ig, `.dockerignore must not exclude ${p}`).not.toContain(p);
+    for (const p of ["node_modules", "dist", ".git", "fixtures"]) expect(ig).toContain(p);
   });
 });
 
-describe(".env files (section 12)", () => {
+describe(".env files (v2)", () => {
   for (const f of [".env.example", ".env.development", ".env.production"]) {
-    it(`${f} has every VITE_* key, the db id, project and allowed email`, () => {
-      const env = parseEnv(readText(f));
+    it(`${f}: client id, allowed email, server-only db id + project; no Firebase keys`, () => {
+      const text = readText(f);
+      const env = parseEnv(text);
       for (const k of ENV_KEYS) expect(env, `${f} missing ${k}`).toHaveProperty(k);
-      expect(env.VITE_FIRESTORE_DATABASE_ID).toBe(DB_ID);
       expect(env.VITE_ALLOWED_EMAIL).toBe(ALLOWED_EMAIL);
-      expect(env.VITE_FIREBASE_PROJECT_ID).toBe(PROJECT_ID);
-      expect(env.VITE_FIREBASE_AUTH_DOMAIN).not.toMatch(/^https?:\/\//);
+      expect(env.FIRESTORE_DATABASE_ID).toBe(DB_ID);
+      expect(env.GOOGLE_CLOUD_PROJECT).toBe(PROJECT_ID);
+      expect(Object.keys(env).filter((k) => /FIREBASE/.test(k)), `${f} has Firebase keys`).toEqual([]);
+      expect(env.VITE_FIRESTORE_DATABASE_ID, "db id must stay server-only (no VITE_ prefix)").toBeUndefined();
+      expect(text).not.toMatch(/PRIVATE|SECRET|PASSWORD|BEGIN [A-Z ]*KEY|client_secret/i);
+      if (env.VITE_GOOGLE_CLIENT_ID) expect(env.VITE_GOOGLE_CLIENT_ID).toMatch(/^[\w-]+\.apps\.googleusercontent\.com$/);
     });
   }
-  it(".env.development uses the firebaseapp.com auth domain (popup in dev)", () => {
-    expect(parseEnv(readText(".env.development")).VITE_FIREBASE_AUTH_DOMAIN).toBe(FIREBASEAPP_HOST);
-  });
-  it("no real secrets beyond public Firebase identifiers", () => {
-    for (const f of [".env.example", ".env.development", ".env.production"]) {
-      const t = readText(f);
-      expect(t).not.toMatch(/PRIVATE|SECRET|PASSWORD|BEGIN [A-Z ]*KEY/i);
-    }
+  it(".env.development selects the memory backend; production does not", () => {
+    expect(parseEnv(readText(".env.development")).DATA_BACKEND).toBe("memory");
+    expect(parseEnv(readText(".env.production")).DATA_BACKEND ?? "firestore").toBe("firestore");
   });
 });
 
-describe(".gitignore / .dockerignore", () => {
-  it("gitignore covers node_modules, dist, generated assets, fixtures, certs", () => {
+describe(".gitignore", () => {
+  it("covers node_modules, dist, generated assets, fixtures, certs", () => {
     const g = readText(".gitignore");
-    for (const p of ["node_modules", "dist", "public/models", "public/wasm", ".env.local", "fixtures"]) {
-      expect(g, `.gitignore missing ${p}`).toContain(p);
-    }
-  });
-  it("dockerignore excludes node_modules, dist, .git, fixtures", () => {
-    const g = readText(".dockerignore");
-    for (const p of ["node_modules", "dist", ".git", "fixtures"]) expect(g).toContain(p);
+    for (const p of ["node_modules", "dist", "public/models", "public/wasm", ".env.local", "fixtures"]) expect(g, `.gitignore missing ${p}`).toContain(p);
   });
 });
 
-describe("package.json scripts (section 12)", () => {
+describe("package.json scripts + tsconfigs (v2)", () => {
   const pkg = JSON.parse(readText("package.json"));
-  it("has the documented scripts", () => {
-    expect(pkg.scripts.build).toBe("tsc --noEmit && vite build");
+  it("typecheck runs both tsconfigs; build typechecks first; start runs the server", () => {
+    expect(pkg.scripts.typecheck).toBe("tsc --noEmit && tsc --noEmit -p tsconfig.server.json");
+    expect(pkg.scripts.build).toBe("npm run typecheck && vite build");
+    expect(pkg.scripts.start).toBe("node server/index.ts");
     expect(pkg.scripts.test).toBe("vitest run");
     expect(pkg.scripts.postinstall).toBe("node scripts/setup-assets.mjs");
-    expect(pkg.scripts["deploy:rules"]).toBe("firebase deploy --only firestore:rules");
-    expect(pkg.scripts.deploy).toMatch(/gcloud run deploy fashion-assistant --source \. --region us-central1 --allow-unauthenticated --max-instances 2/);
+    expect(pkg.scripts["deploy:rules"], "firebase CLI is gone").toBeUndefined();
+    expect(pkg.scripts.deploy).toContain("gcloud run deploy fashion-assistant --source . --region us-central1 --allow-unauthenticated --max-instances 2");
   });
-  it("runtime deps are exactly firebase, mediapipe, fflate", () => {
-    expect(Object.keys(pkg.dependencies).sort()).toEqual(["@mediapipe/tasks-vision", "fflate", "firebase"]);
+  it("tsconfig.server.json: Node type-stripping rules (erasable syntax, .ts imports)", () => {
+    const j = JSON.parse(readText("tsconfig.server.json"));
+    const c = j.compilerOptions;
+    expect(c.strict).toBe(true);
+    expect(c.erasableSyntaxOnly).toBe(true);
+    expect(c.allowImportingTsExtensions).toBe(true);
+    expect(c.verbatimModuleSyntax).toBe(true);
+    expect(c.module).toBe("NodeNext");
+    expect(j.include).toEqual(expect.arrayContaining(["server", "tests/server", "src/types.ts"]));
+  });
+  it("tsconfig.json (client) is strict", () => {
+    expect(JSON.parse(readText("tsconfig.json")).compilerOptions.strict).toBe(true);
   });
 });
 
-describe("vite.config.ts (section 12)", () => {
+describe("vite.config.ts (v2)", () => {
   const v = stripComments(readText("vite.config.ts"));
-  it("service worker never answers /__/ (navigateFallbackDenylist)", () => {
-    expect(v).toMatch(/navigateFallbackDenylist\s*:\s*\[\s*\/\^\\\/__\\\/\/\s*\]/);
+  it("service worker never answers /api/ navigations", () => {
+    expect(v).toMatch(/navigateFallbackDenylist\s*:\s*\[\s*\/\^\\\/api\\\/\/\s*\]/);
+  });
+  it("dev server proxies /api to the local Node server on 8080", () => {
+    expect(v).toMatch(/proxy\s*:\s*\{\s*["']\/api["']\s*:\s*["']http:\/\/localhost:8080["']/);
   });
   it("build input is index.html only (replay.html never in dist)", () => {
     expect(v).toMatch(/input\s*:\s*["']index\.html["']/);
     expect(v).not.toMatch(/replay/);
   });
-  it("PWA manifest: autoUpdate, standalone, portrait, 3 icons incl. maskable", () => {
+  it("PWA manifest: autoUpdate, standalone, portrait, maskable icon", () => {
     expect(v).toMatch(/registerType\s*:\s*["']autoUpdate["']/);
     expect(v).toMatch(/display\s*:\s*["']standalone["']/);
     expect(v).toMatch(/orientation\s*:\s*["']portrait["']/);
-    expect(v).toContain("/icons/icon-192.png");
-    expect(v).toContain("/icons/icon-512.png");
     expect(v).toMatch(/icon-512-maskable\.png[^}]*purpose\s*:\s*["']maskable["']/);
   });
-  it("MediaPipe /models/ and /wasm/ are runtime CacheFirst, not precached", () => {
-    expect(v).toMatch(/\/models\//);
-    expect(v).toMatch(/\/wasm\//);
+  it("precache excludes dev chunks and wasm; models/wasm runtime CacheFirst", () => {
+    expect(v).toMatch(/globIgnores\s*:\s*\[[^\]]*debugCapture[^\]]*\]/);
+    expect(v).toMatch(/globIgnores\s*:\s*\[[^\]]*wasm[^\]]*\]/);
     expect(v).toMatch(/handler\s*:\s*["']CacheFirst["']/);
     const globs = v.match(/globPatterns\s*:\s*\[([^\]]*)\]/)?.[1] ?? "";
     expect(globs).not.toMatch(/task|tflite|wasm/);
   });
-  it("basicSsl only for the dev server", () => {
-    expect(v).toMatch(/command\s*===\s*["']serve["']\s*\?\s*\[\s*basicSsl\(\)\s*\]/);
-  });
 });
 
-describe("tsconfig / html entries", () => {
-  it("tsconfig is strict", () => {
-    expect(JSON.parse(readText("tsconfig.json")).compilerOptions.strict).toBe(true);
-  });
+describe("html entries", () => {
   it("index.html loads src/main.ts; replay.html loads src/dev/replay.ts", () => {
     expect(readText("index.html")).toContain('src="/src/main.ts"');
     expect(readText("replay.html")).toContain('src="/src/dev/replay.ts"');
-    expect(readText("index.html")).not.toMatch(/replay|debug/i);
+    expect(readText("index.html")).not.toMatch(/replay|debug|firebase/i);
   });
 });
 
@@ -211,7 +187,6 @@ function pngInfo(rel: string): { w: number; h: number } {
   });
   const w = b.readUInt32BE(16);
   const h = b.readUInt32BE(20);
-  // Concatenate IDAT chunks and inflate to prove the file is decodable.
   let off = 8;
   const idat: Buffer[] = [];
   while (off < b.length) {
@@ -258,14 +233,12 @@ describe("[B device-capture] public/device-profiles.json", () => {
       expect(s.front35mmEqMm, where).toBeGreaterThanOrEqual(15); // ultra-wide fronts exist (Pixel 9 Pro ~17)
       expect(s.front35mmEqMm, where).toBeLessThanOrEqual(35);
       if (s.screenMatch) {
-        expect(s.screenMatch.width).toBeLessThan(s.screenMatch.height); // portrait CSS px
+        expect(s.screenMatch.width).toBeLessThan(s.screenMatch.height);
         expect([2, 3]).toContain(s.screenMatch.dpr);
       }
     }
-    // Android UA models must not map to two entries.
     const ua = specs.flatMap((s: { uaModels?: string[] }) => s.uaModels ?? []);
     expect(new Set(ua).size).toBe(ua.length);
-    // At least one iPhone family and one Android model (section 4, M1).
     expect(specs.some((s: { screenMatch?: unknown }) => !!s.screenMatch)).toBe(true);
     expect(specs.some((s: { uaModels?: string[] }) => !!s.uaModels?.length)).toBe(true);
   });

@@ -29,7 +29,7 @@ export default defineConfig(({ command }) => ({
         // Dev-only debug chunks never run in production; wasm loaders
         // are cached on first use by the runtime rule below.
         globIgnores: ["**/debugCapture-*.js", "**/debug-*.js", "**/wasm/**"],
-        navigateFallbackDenylist: [/^\/__\//],
+        navigateFallbackDenylist: [/^\/api\//],
         runtimeCaching: [
           {
             urlPattern: ({ url }) => url.pathname.startsWith("/models/") || url.pathname.startsWith("/wasm/"),
@@ -40,7 +40,7 @@ export default defineConfig(({ command }) => ({
       },
     }),
   ],
-  server: { host: true },
+  server: { host: true, proxy: { "/api": "http://localhost:8080" } },
   build: {
     rollupOptions: { input: "index.html" },
   },

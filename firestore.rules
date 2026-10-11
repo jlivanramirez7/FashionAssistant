@@ -1,15 +1,10 @@
 rules_version = '2';
+// Browsers never access Firestore directly: the Cloud Run server uses its
+// service account (IAM), which bypasses these rules. Deny all client access.
 service cloud.firestore {
   match /databases/{database}/documents {
-    function isAllowedUser() {
-      return request.auth != null
-        && request.auth.token.email == 'jlivanramirez7@gmail.com'
-        && request.auth.token.email_verified == true
-        && request.auth.token.firebase.sign_in_provider == 'google.com';
+    match /{document=**} {
+      allow read, write: if false;
     }
-    match /users/{uid}/{document=**} {
-      allow read, write: if isAllowedUser() && request.auth.uid == uid;
-    }
-    // Everything else is denied by default.
   }
 }

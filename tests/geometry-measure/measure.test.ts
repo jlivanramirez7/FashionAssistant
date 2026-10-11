@@ -172,7 +172,7 @@ describe("computeMeasurements on synthetic scans", () => {
         expect(m!.confidence).toBeGreaterThanOrEqual(0);
         expect(m!.confidence).toBeLessThanOrEqual(1);
       }
-    });
+    }, 60_000); // rasterises full-res synthetic scans; ~6 s under a full parallel run
   }
 
   const body = new Body(175);

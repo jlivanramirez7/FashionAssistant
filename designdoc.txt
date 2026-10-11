@@ -20,7 +20,8 @@ Goal:
 Users:
   One person measuring themselves on their own phone, any recent
   iPhone or Android, in a normal room. v1 is private: only the Google
-  account jlivanramirez7@gmail.com can sign in (section 10).
+  account jlivanramirez7@gmail.com can sign in (Google sign-in,
+  checked by the app's own server on Cloud Run; section 10).
 
 Success criteria (v1):
   - Lengths (height, shoulder width, arm, inseam) within +/-1.5 cm of
@@ -506,7 +507,8 @@ S7. Results
   - "Copy all" copies a plain-text list for pasting into a shop's
     size form or a note
   - "Add tape measurements" opens S9 Validation for this scan
-  - Saved to Firestore automatically when the screen opens
+  - Saved automatically when the screen opens (POST /api/scans;
+    queued in the offline outbox when there is no signal)
 
 S8. History
   +------------------------------+
@@ -525,8 +527,8 @@ S8. History
   - "Delete all my data" asks for confirmation ("Delete all scans,
     devices and settings? This cannot be undone."), then deletes
     every document under users/{uid} (scans, devices, settings)
-    client-side, clears the local Firestore cache and the stored
-    deviceId.
+    and all sessions on the server (DELETE /api/me/data, section
+    11), then clears the local outbox and the stored deviceId.
 
 S9. Validation (from Results > "Add tape measurements")
   +------------------------------+
@@ -742,26 +744,36 @@ v2 upgrade:
 8. ARCHITECTURE AND TECH STACK
 ======================================================================
 v1 is a progressive web app (PWA). All image processing runs on the
-phone and no images are uploaded. The built app is served from
-Google Cloud Run; sign-in uses Google via Firebase Authentication;
-measurement results are stored in Firestore.
+phone and no images are uploaded. One small Node server on Google
+Cloud Run serves the built app and a JSON API under /api. Sign-in uses
+Google Identity Services (GIS); the server verifies the Google ID
+token, keeps a session, and is the only component that talks to
+Firestore (through its service account). The browser never talks to
+Firestore directly.
 
   [Phone browser: PWA]
      |  - front camera, motion sensors, MediaPipe (all on-device)
      |
-     |-- HTTPS GET app files ------------> [Cloud Run: nginx serving
-     |                                      the built PWA]
-     |-- Google sign-in (redirect) ------> same origin /__/auth/...
-     |     nginx proxies /__/auth/ and       --> [fashionassitant.
-     |     /__/firebase/ ------------------>      firebaseapp.com]
-     |                                       --> [Firebase Auth]
-     |-- read/write results (Firebase SDK) --> [Firestore]
-                                              (security rules allow
-                                               only the one account)
+     |-- HTTPS GET app files ---------> [Cloud Run: node server/index.ts]
+     |                                    |- serves dist/ (static,
+     |                                    |  SPA fallback)
+     |-- fetch /api/* (JSON, -----------> |- /api/* (session cookie)
+     |   session cookie)                  |
+     |                                    '- @google-cloud/firestore
+     |                                       (service account, IAM)
+     |                                          |
+     |                                          v
+     |                                  [Firestore fashionassitant-db]
+     |                                   (rules deny all clients)
+     |
+     |-- GIS button (redirect mode) ---> [accounts.google.com]
+           Google POSTs the ID token ----> POST /api/auth/google
+           back to the app                 (verify, allowlist, session)
 
   - Language/build: TypeScript + Vite (no UI framework in v1; the
     capture flow is a small state machine driving plain DOM)
-  - PWA: vite-plugin-pwa (manifest, service worker, offline cache)
+  - PWA: vite-plugin-pwa (manifest, service worker, offline cache;
+    /api/* is never answered by the service worker)
   - Camera: FRONT (selfie) camera, getUserMedia facingMode "user",
     so the screen faces the user standing 2-3 m away. The preview is
     mirrored for the user; all computation uses unmirrored frames.
@@ -771,31 +783,54 @@ measurement results are stored in Firestore.
       Processing: pose_landmarker_heavy + ImageSegmenter
       (selfie_multiclass_256x256) on per-region full-res crops of
       the ~10 kept frames per step; ~5-15 s on a mid-range phone.
-  - Auth: Firebase Authentication, Google provider (section 10)
-  - Database: Cloud Firestore via the Firebase web SDK (section 11)
-  - Hosting: Google Cloud Run, container = nginx + built files
-    (section 9)
-  - Tests: Vitest for geometry and measurement math
+  - Auth: Google Identity Services sign-in button (redirect mode),
+    ID token verified on the server with google-auth-library,
+    HttpOnly session cookie (section 10)
+  - Server: Node 24 running server/index.ts directly (built-in
+    TypeScript type stripping, no compile step). Uses only node:http,
+    node:fs, node:crypto, node:path, node:zlib plus
+    @google-cloud/firestore and google-auth-library. Server code is
+    erasable TypeScript only (no enums, namespaces or parameter
+    properties) with explicit .ts extensions in relative imports.
+  - Database: Cloud Firestore, accessed only by the server through
+    @google-cloud/firestore (section 11)
+  - Hosting: Google Cloud Run, one Node container that serves both
+    the app files and the API (section 9)
+  - Tests: Vitest for geometry and measurement math, client data/auth
+    and the server (driven over node:http on an ephemeral port with
+    the in-memory store and a fake token verifier; no Google or GCP
+    calls in tests)
   - Dev replay harness (development only, never in production
     builds, never uploads): a "Debug capture" toggle (dev builds or
     ?debug=1 on a dev host) saves frames (JPEG) + sensor readings +
     inputs as a .zip download (fflate); replay.html loads that zip
     on a desktop browser and runs the same pipeline. Fixtures live
     in fixtures/ (gitignored).
-  - Node.js 22 LTS for local tooling and the build stage
+  - Node.js 24 for local tooling, the build stage and the runtime
 
-Module layout (src/):
+Module layout (src/, client):
 
-  main.ts       Entry: init Firebase, await finishRedirect() (section
-                10), start the auth guard, start the app
-  config.ts     Reads VITE_* env vars (Firebase config, allowed email)
-  auth/         firebase.ts (app/auth/db init), authGuard.ts (sign-in
-                screen, redirect/popup, allowlist check, sign-out)
-  data/         scans.ts (save/list scans), devices.ts (camera
-                calibration per device: lensOffsetCm, distortionK1),
-                deviceId.ts, settings.ts (correction factors),
-                validation.ts (tape measurements, error stats,
-                computing k), deleteAll.ts (delete all my data)
+  main.ts       Entry: if sign-in is not configured show a setup
+                message; else readAuthError(), getCurrentUser(),
+                then Sign-in screen or Home
+  config.ts     Reads VITE_* env vars: GOOGLE_CLIENT_ID,
+                ALLOWED_EMAIL, APP_VERSION; isAuthConfigured()
+  types.ts      Shared types and constants (measurement keys,
+                ScanDoc, UserDoc, DeviceProfile, ...); also imported
+                by the server
+  auth/         authGuard.ts: loads GIS and renders the sign-in
+                button (redirect mode, login_uri /api/auth/google),
+                readAuthError() (?auth_error=private|failed),
+                getCurrentUser() (GET /api/me), signOutUser()
+                (POST /api/logout), isAllowed() pure helper
+  data/         fetch() calls to /api (same-origin cookie,
+                X-Requested-With header on writes):
+                scans.ts (save/list scans; offline outbox, below),
+                user.ts (user doc), devices.ts (camera calibration
+                per device: lensOffsetCm, distortionK1), deviceId.ts,
+                settings.ts (correction factors), validation.ts
+                (pure: tape measurements, error stats, computing k),
+                deleteAll.ts (DELETE /api/me/data)
   capture/      camera.ts (front camera, track settings), sensors.ts
                 (gravity vector, tilt/roll averaging, permission),
                 voice.ts
@@ -806,6 +841,7 @@ Module layout (src/):
                 track size; merges saved calibration)
   flow/         stateMachine.ts (signin > home > setup > place >
                 capture steps 1-3 > processing > results)
+  pipeline/     runPipeline.ts (Processing step, section 7)
   vision/       pose.ts (lite live, heavy on capture),
                 segmentation.ts, crops.ts (per-region crop boxes from
                 landmarks), edgeRefine.ts (snap mask edge to image
@@ -828,198 +864,267 @@ Module layout (src/):
   units.ts      cm <-> inch formatting (inches to nearest 0.25")
   wakeLock.ts   Keeps the screen on during setup and capture
 
+Offline outbox (src/data/scans.ts): a finished scan must never be
+lost. If the phone is offline or the POST fails with a network error,
+saveScan assigns a client id (random UUID), stores the scan in a
+localStorage outbox ("fa.outbox") and returns that id. The outbox is
+flushed on app start and on "online" events: POST /api/scans with
+the same clientId, which the server uses as the document id, so a
+retry never creates a duplicate. Other writes simply fail with a
+clear error while offline.
+
+Module layout (server/):
+
+  index.ts            Startup: config, store, HTTP server, graceful
+                      shutdown on SIGTERM
+  config.ts           Reads process.env, falls back to the app's
+                      .env.production / .env.development (section 9)
+  http.ts             Router, JSON and body helpers (1 MB limit),
+                      cookies
+  static.ts           Serves dist/ (MIME types, caching, gzip, SPA
+                      fallback, no path traversal)
+  auth.ts             POST /api/auth/google, sessions, CSRF checks
+  api.ts              The /api routes (section 11); exports
+                      createApp(deps) so tests can drive it
+  validate.ts         Pure request validation (no image data, known
+                      measurement keys, id format)
+  store.ts            interface Store (users, scans, devices,
+                      settings, sessions)
+  store-firestore.ts  Store on Firestore (service account)
+  store-memory.ts     Store in memory (local dev and tests)
+
 ======================================================================
 9. DEPLOYMENT AND BACKEND (GOOGLE CLOUD)
 ======================================================================
-The app runs on Google Cloud Run, and Firestore is the backend. There
-is no custom API server in v1: the phone talks to Firestore directly
-through the Firebase SDK, and Firestore security rules enforce
-access (section 11).
+The app runs as one Node container on Google Cloud Run. The same
+process serves the built PWA and the JSON API, and it is the only
+thing that reads or writes Firestore. There is no separate web
+server and no other service.
+
+Firebase is intentionally not used (no Firebase Auth, SDK or CLI).
 
 Google Cloud project:
-  - Project ID: fashionassitant. One project, also registered as a
-    Firebase project (Firebase Auth and Firestore live in the same
-    project)
-  - Region: us-central1 (default; change before first deploy if you
-    prefer another). The Firestore location cannot be changed later.
+  - Project ID: fashionassitant
+  - Region: us-central1. The Firestore location cannot be changed
+    later.
   - APIs to enable: Cloud Run, Cloud Build, Artifact Registry,
-    Firestore, Identity Toolkit (Firebase Auth)
+    Firestore (section 13)
 
 Cloud Run service "fashion-assistant":
-  - Container: multi-stage Docker build (Node builds the app, nginx
-    serves dist/ on port 8080)
-  - nginx also proxies /__/auth/ and /__/firebase/ to
-    https://fashionassitant.firebaseapp.com (same-origin auth helper
-    for redirect sign-in, section 10)
-  - Deployed with "gcloud run deploy --source ." (Cloud Build builds
-    the Dockerfile and pushes to Artifact Registry)
+  - Container: multi-stage Docker build. Build stage (node:24-alpine)
+    runs npm ci (which also fetches the MediaPipe assets), npm run
+    build (typecheck of client and server + vite build), checks that
+    the models and wasm reached dist/, and prunes dev dependencies.
+    Runtime stage (node:24-alpine) copies node_modules, dist/,
+    server/, src/types.ts and .env.production and runs
+    "node server/index.ts" as the non-root node user on port 8080.
+  - Continuous deployment: Cloud Run is connected to the GitHub
+    repository; a Cloud Build trigger on branch "main" (^main$)
+    builds the Dockerfile, pushes the image to Artifact Registry and
+    deploys a new revision. Deploying = pushing to main. (Manual
+    fallback: npm run deploy, i.e. gcloud run deploy --source .)
   - --allow-unauthenticated: the page itself must load in a normal
-    browser. The app files are not secret; all personal data is
-    protected by sign-in + Firestore rules.
+    browser. The app files are not secret; every /api route that
+    touches data requires a valid session (section 10).
   - Scales to zero when idle; min instances 0, max instances 2
   - HTTPS URL https://fashion-assistant-<hash>-uc.a.run.app (a custom
-    domain can be mapped later)
-  - The run.app host is only known after the first deploy: deploy
-    once, set VITE_FIREBASE_AUTH_DOMAIN + the OAuth redirect URI,
-    redeploy (section 10)
+    domain can be mapped later; it then needs the same OAuth origin
+    and redirect URI entries, section 10)
+  - The server adds basic security headers to every response (e.g.
+    X-Content-Type-Options: nosniff, a strict Referrer-Policy, no
+    framing). Nothing in sign-in depends on popups or
+    Cross-Origin-Opener-Policy.
+
+Static serving (server/static.ts):
+  - dist/ with correct MIME types, including .wasm application/wasm,
+    .webmanifest and .task/.tflite application/octet-stream
+  - Cache-Control: no-cache for index.html and sw.js; immutable,
+    1 year for /assets/*
+  - gzip for text types when the browser accepts it
+  - SPA fallback to index.html for GET requests that are not /api/*
+    and have no file extension; unknown /api routes get a JSON 404
+  - Path traversal outside dist/ is impossible (resolved paths are
+    checked against the dist root)
+
+Configuration (server/config.ts):
+  The server reads process.env first and falls back to values parsed
+  from .env.production (NODE_ENV=production) or .env.development
+  (otherwise) in the app root, so Cloud Run works without setting any
+  service environment variables:
+    GOOGLE_CLIENT_ID       fallback VITE_GOOGLE_CLIENT_ID
+    ALLOWED_EMAIL          fallback VITE_ALLOWED_EMAIL, lowercased;
+                           empty => nobody can sign in
+    FIRESTORE_DATABASE_ID  default "fashionassitant-db"
+    GOOGLE_CLOUD_PROJECT   default "fashionassitant"
+    DATA_BACKEND           "firestore" | "memory" (default firestore
+                           when NODE_ENV=production, else memory)
+    PORT                   default 8080
+    DIST_DIR               default <root>/dist
+    COOKIE_SECURE          default true when NODE_ENV=production
 
 Firestore:
-  - Database ID: fashionassitant-db (Native mode). This is a named
-    database, not "(default)", so the app, the Firebase CLI and the
-    gcloud commands must all pass this ID explicitly.
+  - Database ID: fashionassitant-db (Native mode, already created).
+    This is a named database, not "(default)", so the server passes
+    databaseId explicitly.
+  - Access: the server uses the Cloud Run runtime service account
+    (Application Default Credentials, no key files). That account
+    needs roles/datastore.user on the project. IAM access bypasses
+    security rules; the rules deny every client (section 11).
   - Stores scan results, scan history, per-device camera
     calibration, validation data (tape measurements, raw values,
-    correction factors) and per-scan diagnostics. Only numbers are
-    stored; camera images stay on the phone.
-  - Offline: enable the SDK's persistent local cache so a scan
-    finished without signal is saved and syncs later
+    correction factors), per-scan diagnostics and login sessions.
+    Only numbers and short strings are stored; camera images stay on
+    the phone, and the server rejects anything that looks like image
+    data.
+  - Offline: the client outbox (section 8) keeps a finished scan
+    until it can be POSTed.
 
-Cost: expected ~$0 (Cloud Run scales to zero, Firestore free tier).
-As a guardrail the runbook adds a billing budget alert (section 13).
+Cost: expected ~$0. Cloud Run scales to zero and stays in its free
+tier at this traffic, Firestore stays in the free tier, and Cloud
+Build / Artifact Registry usage for occasional pushes is a few cents
+at most (delete old images if storage grows). As a guardrail the
+runbook adds a billing budget alert (section 13). The trade-off of
+scaling to zero is a cold start of a second or two on the first
+request after idle.
 
 ======================================================================
 10. AUTHENTICATION AND ACCESS CONTROL
 ======================================================================
-Users sign in with Google (Firebase Authentication). Only the Google
-account jlivanramirez7@gmail.com can use the app. The allowlist is
-enforced in two places:
+Users sign in with Google through Google Identity Services (GIS).
+Only the Google account jlivanramirez7@gmail.com can use the app. The
+server is the real protection: it verifies every sign-in itself,
+issues the session, and checks the session on every API call. The
+browser only shows screens.
 
-  1. Server side (the real protection): Firestore security rules
-     reject every read and write unless the signed-in token's email
-     is jlivanramirez7@gmail.com, the email is verified, and the
-     sign-in provider is Google. See section 11.
-  2. Client side (user experience only): after sign-in the app
-     checks the email; any other account is signed out immediately
-     and shown "This app is private."
+Sign-in flow (GIS redirect mode):
+  1. App loads -> readAuthError() reads ?auth_error= (private or
+     failed), shows a message if present and removes it from the URL.
+  2. getCurrentUser(): GET /api/me. 200 { uid, email } -> Home.
+     401 -> Sign-in screen.
+  3. Sign-in screen: the app loads https://accounts.google.com/gsi/
+     client once and renders Google's own button with
+     ux_mode "redirect" and login_uri <origin>/api/auth/google.
+  4. Tap -> the whole page goes to Google; the user picks the
+     account. Google then POSTs an HTML form
+     (application/x-www-form-urlencoded) to /api/auth/google with
+     credential (the ID token) and g_csrf_token, and also sets a
+     g_csrf_token cookie.
+  5. Server, POST /api/auth/google:
+       - double-submit CSRF: g_csrf_token cookie must equal the body
+         field
+       - verify the ID token with google-auth-library
+         (signature, expiry, issuer, audience = GOOGLE_CLIENT_ID)
+       - require email_verified and email (lowercased) ==
+         ALLOWED_EMAIL
+       - allowed: create a session, 303 redirect to /
+       - other account: 303 to /?auth_error=private (no session)
+       - bad token or CSRF: 303 to /?auth_error=failed
+  6. Back on /, GET /api/me now returns the user -> Home.
+  7. "Sign out" on Home (S2): POST /api/logout deletes the session
+     and clears the cookie; the client also calls
+     google.accounts.id.disableAutoSelect().
 
-Sign-in flow:
-  1. App loads -> getRedirectResult() finishes a pending redirect
-     sign-in (if any); onAuthStateChanged() checks for a session.
-  2. No session -> show a "Sign in with Google" button.
-  3. Tap -> GoogleAuthProvider with login_hint =
-     jlivanramirez7@gmail.com, then:
-       Production: signInWithRedirect(); the page goes to the
-       same-origin helper https://<app-host>/__/auth/handler and
-       comes back to the app, which handles getRedirectResult().
-       Dev: signInWithPopup().
-  4. Email != allowed email -> signOut(), show the "private" message.
-  5. Allowed -> session persists on the phone (local persistence is
-     the default), so later visits skip sign-in; continue to Home.
-  6. A "Sign out" link lives on the Home screen (S2).
+Sessions:
+  - Random 32-byte id (base64url) in cookie fa_session: HttpOnly,
+    Secure (production), SameSite=Lax, Path=/, Max-Age 30 days.
+  - Stored server-side as sessions/{sha256(id) hex} = { uid, email,
+    createdAt, expiresAt }, so a database leak does not reveal live
+    cookies. uid = the Google account's stable "sub" claim.
+  - Unknown or expired session -> 401.
+  - Every /api route except /api/auth/google and /api/health needs a
+    valid session, and the session's email is re-checked against
+    ALLOWED_EMAIL on every request (changing the allowlist logs
+    everyone else out at once).
 
-Why redirect with a same-origin helper: popup sign-in often fails in
-an installed iOS home-screen app (PWA). Plain signInWithRedirect is
-also unreliable when the app's domain (run.app) differs from the auth
-domain (firebaseapp.com), because Safari and Chrome block third-party
-storage. Serving the auth helper from the app's own origin fixes
-that:
-  - nginx proxies /__/auth/ and /__/firebase/ to
-    https://fashionassitant.firebaseapp.com (proxy_pass,
-    proxy_ssl_server_name on, Host header set to the firebaseapp
-    host; section 12).
-  - VITE_FIREBASE_AUTH_DOMAIN = the app's own host (run.app host or
-    custom domain) in .env.production. In .env.development it stays
-    fashionassitant.firebaseapp.com and dev uses signInWithPopup.
-  - The code picks redirect when authDomain equals location.host,
-    otherwise popup.
+CSRF guards:
+  - /api/auth/google: GIS double-submit token (cookie == form field).
+  - Every other POST/PUT/PATCH/DELETE must carry the header
+    X-Requested-With: fashion-assistant, else 403. With the
+    SameSite=Lax cookie a cross-site page cannot send a credentialed
+    request with a custom header.
 
-Firebase Auth settings (console):
-  - Sign-in method: enable Google only; support email
-    jlivanramirez7@gmail.com
-  - Authorized domains: localhost, the Cloud Run run.app host (and
-    custom domain, if mapped), and any dev host used for phone
-    testing (section 13)
-  - OAuth redirect URI: add https://<app-host>/__/auth/handler to
-    the OAuth 2.0 Web client's authorized redirect URIs (Google
-    Cloud console > APIs & Services > Credentials).
-  - The run.app host is only known after the first deploy: deploy
-    once, set VITE_FIREBASE_AUTH_DOMAIN + redirect URI, redeploy.
+Why redirect mode and no popups: popup sign-in often fails in an
+installed iOS home-screen app (PWA), and the GIS One Tap / popup
+flows depend on third-party cookies and window.opener, which Safari
+and Chrome increasingly block. In redirect mode Google sends a plain
+form POST to our own origin, so the session cookie is first-party and
+nothing depends on cross-site storage.
 
-Hardening:
-  - Restrict the Firebase browser API key (Google Cloud console >
-    APIs & Services > Credentials) to HTTP referrers: the run.app URL,
-    https://fashionassitant.firebaseapp.com (dev popup) and localhost
-    (section 13, step 14).
-  - Do not set the response header
-    Cross-Origin-Opener-Policy: same-origin; it breaks the dev
-    sign-in popup.
-  - Other Google accounts can still complete Google sign-in and get
-    an (empty) Firebase Auth user record, but they can read and
-    write nothing. Optional later: block them at sign-in with an
-    Identity Platform blocking function.
+Google Cloud setup (console > APIs & Services):
+  - OAuth consent screen: user type External, publishing status
+    Testing, test user jlivanramirez7@gmail.com (only test users can
+    sign in while in Testing; the server allowlist still applies).
+    Scopes: none beyond the default openid, email, profile.
+  - Credentials > Create credentials > OAuth client ID > Web
+    application:
+      Authorized JavaScript origins:
+        https://<run.app host>      (and a custom domain if mapped)
+        http://localhost:5173
+        https://localhost:5173
+        http://localhost:8080
+      Authorized redirect URIs:
+        https://<run.app host>/api/auth/google
+        https://localhost:5173/api/auth/google
+        http://localhost:8080/api/auth/google
+  - The client ID is a public identifier: it goes into .env.production
+    and .env.development as VITE_GOOGLE_CLIENT_ID. There is no client
+    secret in this design (ID-token flow only).
+  - GIS only accepts the origins listed above; a LAN IP such as
+    https://192.168.x.x:5173 is not allowed, so phone testing uses
+    the deployed URL or an HTTPS tunnel host added to the list.
 
-Code sketch - src/auth/authGuard.ts:
+Code sketch - client sign-in (src/auth/authGuard.ts):
 
-  import { GoogleAuthProvider, getRedirectResult, onAuthStateChanged,
-           signInWithPopup, signInWithRedirect, signOut,
-           type User } from "firebase/auth";
-  import { auth } from "./firebase";
-  import { ALLOWED_EMAIL, firebaseConfig } from "../config";
-
-  // Production: authDomain is the app's own host (same-origin
-  // helper via nginx) -> redirect. Dev: firebaseapp.com -> popup.
-  const useRedirect = firebaseConfig.authDomain === location.host;
-
-  export function isAllowed(user: User | null): boolean {
-    return !!user && user.emailVerified &&
-           user.email?.toLowerCase() === ALLOWED_EMAIL;
-  }
-
-  async function checkAllowed(user: User | null): Promise<void> {
-    if (user && !isAllowed(user)) {
-      await signOut(auth);
-      throw new Error("This app is private.");
-    }
-  }
-
-  // Call once on load, before showing the sign-in screen.
-  export async function finishRedirect(): Promise<void> {
-    const result = await getRedirectResult(auth);
-    await checkAllowed(result?.user ?? null);
-  }
-
-  export async function signIn(): Promise<void> {
-    const provider = new GoogleAuthProvider();
-    provider.setCustomParameters({ login_hint: ALLOWED_EMAIL });
-    if (useRedirect) {
-      await signInWithRedirect(auth, provider); // page navigates away
-      return;
-    }
-    const { user } = await signInWithPopup(auth, provider);
-    await checkAllowed(user);
-  }
-
-  export function watchAuth(onChange: (u: User | null) => void) {
-    return onAuthStateChanged(auth, async (user) => {
-      if (user && !isAllowed(user)) { await signOut(auth); user = null; }
-      onChange(user);
+  export async function renderSignInButton(el: HTMLElement) {
+    await loadGis();   // <script src=".../gsi/client"> once
+    google.accounts.id.initialize({
+      client_id: GOOGLE_CLIENT_ID,
+      ux_mode: "redirect",
+      login_uri: location.origin + "/api/auth/google",
+      auto_select: false,
     });
+    google.accounts.id.renderButton(el, { theme: "filled_black",
+      size: "large", text: "signin_with", shape: "pill" });
   }
 
-Code sketch - src/auth/firebase.ts:
+  export async function getCurrentUser() {
+    const r = await fetch("/api/me", { credentials: "same-origin" });
+    return r.status === 401 ? null : await r.json(); // { uid, email }
+  }
 
-  import { initializeApp } from "firebase/app";
-  import { getAuth } from "firebase/auth";
-  import { initializeFirestore, persistentLocalCache }
-           from "firebase/firestore";
-  import { firebaseConfig, FIRESTORE_DATABASE_ID } from "../config";
+Code sketch - server verification (server/auth.ts):
 
-  export const app = initializeApp(firebaseConfig);
-  // getAuth() in a browser already uses local persistence.
-  export const auth = getAuth(app);
-  // Third argument = the named database "fashionassitant-db";
-  // without it the SDK would use "(default)".
-  export const db = initializeFirestore(app,
-    { localCache: persistentLocalCache() }, FIRESTORE_DATABASE_ID);
+  const form = new URLSearchParams(await readBody(req));
+  const csrf = form.get("g_csrf_token");
+  if (!csrf || csrf !== cookies(req).g_csrf_token)
+    return redirect(res, "/?auth_error=failed");
+  let p;
+  try {
+    const ticket = await oauth.verifyIdToken({
+      idToken: form.get("credential") ?? "",
+      audience: cfg.googleClientId });
+    p = ticket.getPayload();
+  } catch { return redirect(res, "/?auth_error=failed"); }
+  if (!p?.email_verified ||
+      p.email?.toLowerCase() !== cfg.allowedEmail)
+    return redirect(res, "/?auth_error=private");
+  const id = randomBytes(32).toString("base64url");
+  await store.createSession(sha256hex(id), { uid: p.sub,
+    email: p.email.toLowerCase(), expiresAt: now + 30 * DAY });
+  setCookie(res, "fa_session", id, { httpOnly: true,
+    secure: cfg.cookieSecure, sameSite: "Lax", maxAge: 30 * DAY });
+  redirect(res, "/");                                   // 303
 
 ======================================================================
 11. FIRESTORE DATA MODEL AND SECURITY RULES
 ======================================================================
 Database: fashionassitant-db (named database, see section 9).
 
-All data lives under the signed-in user's id, so the rules are
-simple: you can touch only your own subtree, and only if you are the
-allowed account.
+All user data lives under the signed-in user's id. uid is the
+Google account's "sub" claim from the verified ID token. Only the
+server reads and writes these documents; every API call is scoped
+to the uid of its session, so one account can never reach another
+account's subtree.
 
 Collections:
 
@@ -1032,7 +1137,9 @@ Collections:
                               (optional on Setup; default
                               "unspecified")
 
-  users/{uid}/scans/{scanId}          (scanId = auto id)
+  users/{uid}/scans/{scanId}          (scanId = server auto id, or
+                                       the client's clientId for an
+                                       outbox scan)
     createdAt        timestamp
     status           string   "complete" | "partial"
     heightCm         number   scale input used for this scan
@@ -1097,6 +1204,12 @@ Collections:
     (k = mean(tape / raw ellipse estimate), computed by the
     Validation summary from scans that have tapeMeasurements)
 
+  sessions/{sha256(sessionId) hex}    (server only, section 10)
+    uid              string   Google sub
+    email            string   lowercased
+    createdAt        timestamp
+    expiresAt        timestamp  createdAt + 30 days
+
 Size recommendations are v2; v1 stores measurements only.
 
 Measurement keys (section 7; values always stored in cm):
@@ -1107,40 +1220,78 @@ Measurement keys (section 7; values always stored in cm):
   dresses:  bust (= chest), underbust, shoulderToWaist, torsoLength
   shoes:    footLength
 
+HTTP API (server/api.ts; called by src/data/* and src/auth/*):
+  All JSON; errors are { "error": "<code>", "message": "<text>" }.
+  Timestamps are epoch milliseconds in JSON (stored as Firestore
+  timestamps). Every route except health and auth/google needs the
+  session cookie; writes also need X-Requested-With (section 10).
+
+  Method | Path                           | Body -> response
+  -------|--------------------------------|---------------------------
+  GET    | /api/health                    | { ok: true } (no auth)
+  POST   | /api/auth/google               | GIS form post -> 303
+         |                                | (section 10)
+  GET    | /api/me                        | { uid, email } or 401
+  POST   | /api/logout                    | deletes the session,
+         |                                | clears cookie -> { ok }
+  GET    | /api/user                      | UserDoc or null
+  PATCH  | /api/user                      | Partial<UserDoc>, merged
+         |                                | (first write fills email,
+         |                                | createdAt, units "in",
+         |                                | bodyType "unspecified";
+         |                                | heightCm null deletes)
+         |                                | -> UserDoc
+  GET    | /api/scans                     | ScanDoc[] newest first,
+         |                                | each with id
+  POST   | /api/scans                     | ScanDoc + optional
+         |                                | clientId -> { id };
+         |                                | same clientId again
+         |                                | returns the same id
+  GET    | /api/scans/:id                 | ScanDoc or 404
+  PATCH  | /api/scans/:id                 | Partial<ScanDoc>
+         |                                | (tapeMeasurements null
+         |                                | deletes) -> { ok }
+  DELETE | /api/scans/:id                 | { ok }
+  GET    | /api/devices/:deviceId         | Partial<DeviceProfile>
+         |                                | or null
+  PUT    | /api/devices/:deviceId         | DeviceProfile -> { ok }
+  GET    | /api/settings/correctionFactors| CorrectionFactors or null
+  PUT    | /api/settings/correctionFactors| CorrectionFactors
+         |                                | -> { ok }
+  DELETE | /api/me/data                   | deletes all user data and
+         |                                | sessions -> { ok }
+
+  Server-side validation (server/validate.ts, unit-tested): body at
+  most 1 MB; reject anything that looks like image data (strings
+  over 10 kB, data: URLs, number arrays over 10k items); measurement
+  maps may only contain the measurement keys above, with finite
+  numbers; ids must match ^[A-Za-z0-9_-]{1,64}$.
+
 firestore.rules:
 
   rules_version = '2';
+  // Browsers never access Firestore directly: the Cloud Run server
+  // uses its service account (IAM), which bypasses these rules.
+  // Deny all client access.
   service cloud.firestore {
     match /databases/{database}/documents {
-      function isAllowedUser() {
-        return request.auth != null
-          && request.auth.token.email == 'jlivanramirez7@gmail.com'
-          && request.auth.token.email_verified == true
-          && request.auth.token.firebase.sign_in_provider == 'google.com';
+      match /{document=**} {
+        allow read, write: if false;
       }
-      match /users/{uid}/{document=**} {
-        allow read, write: if isAllowedUser() && request.auth.uid == uid;
-      }
-      // Everything else is denied by default.
     }
   }
 
-With rules_version 2, {document=**} matches zero or more segments,
-so this one rule covers users/{uid} itself and every subcollection
-(scans, devices, settings). The new collections need no rule changes.
+The server's service account is not subject to security rules, so
+deny-all costs nothing and closes the database to every browser and
+API key. Access control lives in the server (session + allowlist +
+uid scoping), covered by the server tests.
 
-"Delete all my data" (History, section 6) works client-side under
-these rules: the web SDK cannot delete a subtree in one call, so the
-app lists users/{uid}/scans, devices and settings, deletes those
-documents in batched writes (max 500 per batch), deletes users/{uid},
-then calls terminate() + clearIndexedDbPersistence() to clear the
-local Firestore cache and removes the stored deviceId from
-localStorage.
-
-Rules are deployed with the Firebase CLI (section 13) and should be
-tested with the Firestore emulator: the allowed account can
-read/write its own subtree; any other account and anonymous requests
-are denied.
+"Delete all my data" (History, section 6) is one server call:
+DELETE /api/me/data deletes users/{uid} with all its subcollections
+(scans, devices, settings) and every session of that uid, and clears
+the cookie. The client then clears its outbox and the stored deviceId
+and reloads. It needs a connection (it fails with a clear message
+when offline).
 
 ======================================================================
 12. PROJECT SCAFFOLDING
@@ -1152,27 +1303,29 @@ Repository layout:
     README.md               setup + deploy steps (from section 13)
     package.json
     package-lock.json
-    tsconfig.json
+    tsconfig.json           client (src/)
+    tsconfig.server.json    server/, tests/server/, src/types.ts
+                            (NodeNext, erasableSyntaxOnly,
+                            allowImportingTsExtensions, noEmit)
     vite.config.ts
     index.html
     replay.html             dev-only replay page (never built into
                             dist/)
-    .env.example            template of the VITE_* variables
-    .env.development        Firebase web config for npm run dev
-                            (auth domain fashionassitant.firebaseapp.com)
-    .env.production         real Firebase web config (committed; see
-                            note below)
-    .gitignore              node_modules, dist, public/models,
-                            public/wasm, .env.local, certs, fixtures
-    .dockerignore           node_modules, dist, .git, fixtures
+    .env.example            template of the variables (below)
+    .env.development        npm run dev / dev:server (memory backend)
+    .env.production         committed; read by the Vite build and,
+                            at runtime, by the server (no secrets)
+    .gitignore              node_modules, dist, dev-dist,
+                            public/models, public/wasm, .env.local,
+                            certs, fixtures
+    .dockerignore           node_modules, dist, dev-dist, .git,
+                            fixtures, public/models, public/wasm
     Dockerfile
-    nginx.conf
-    firebase.json           points the Firebase CLI at firestore.rules
-    .firebaserc             default Firebase project: fashionassitant
-    firestore.rules
-    firestore.indexes.json  empty for v1
+    firestore.rules         deny-all (section 11)
+    docs/                   team contracts (CONTRACTS-v2.md)
     scripts/
       setup-assets.mjs      copies MediaPipe wasm, downloads models
+    server/                 Node API + static server (section 8)
     public/
       icons/                PWA icons 192x192, 512x512, maskable
       device-profiles.json  per-model phone height, front-lens
@@ -1182,69 +1335,78 @@ Repository layout:
                             from manufacturer spec sheets
       models/               (generated) pose + segmenter models
       wasm/                 (generated) MediaPipe wasm runtime
-    src/                    modules from section 8
+    src/                    client modules from section 8
       dev/                  dev-only code: debugCapture.ts (zip of
                             frames + sensors + inputs), replay.ts
                             (entry for replay.html)
     fixtures/               (gitignored) debug-capture zips for replay
-    tests/                  Vitest tests for geometry/ and measure/
+    tests/                  Vitest tests, one folder per area
+                            (geometry-measure, vision, device-capture,
+                            auth-data, ui-flow, dev-tools, qa,
+                            server)
 
-Dependencies (latest stable at install time; lockfile pins them):
-  runtime:  firebase, @mediapipe/tasks-vision, fflate (used only by
-            src/dev/; imported behind import.meta.env.DEV, so it is
-            tree-shaken out of production builds)
+Dependencies (lockfile pins them):
+  runtime:  @mediapipe/tasks-vision, fflate (used only by src/dev/;
+            imported behind import.meta.env.DEV, so it is
+            tree-shaken out of production builds),
+            @google-cloud/firestore 9.x and google-auth-library 11.x
+            (server only)
   dev:      vite, typescript, vite-plugin-pwa,
-            @vitejs/plugin-basic-ssl, vitest, firebase-tools
+            @vitejs/plugin-basic-ssl, vitest, jsdom, @types/node
 
 package.json scripts:
   "dev":          "vite --host"
-  "build":        "tsc --noEmit && vite build"
+  "dev:server":   "node --watch server/index.ts"
+  "build":        "npm run typecheck && vite build"
+  "start":        "node server/index.ts"
   "preview":      "vite preview --host"
+  "typecheck":    "tsc --noEmit && tsc --noEmit -p
+                   tsconfig.server.json"
   "test":         "vitest run"
+  "test:watch":   "vitest"
   "postinstall":  "node scripts/setup-assets.mjs"
-  "deploy:rules": "firebase deploy --only firestore:rules"
   "deploy":       "gcloud run deploy fashion-assistant --source .
                    --region us-central1 --allow-unauthenticated
-                   --max-instances 2"
+                   --max-instances 2"   (manual fallback; normal
+                   deploys come from pushes to main)
 
-Environment variables (.env.example):
-  VITE_FIREBASE_API_KEY=
-  VITE_FIREBASE_AUTH_DOMAIN=fashionassitant.firebaseapp.com
-  VITE_FIREBASE_PROJECT_ID=fashionassitant
-  VITE_FIREBASE_APP_ID=
-  VITE_FIREBASE_MESSAGING_SENDER_ID=
-  VITE_FIRESTORE_DATABASE_ID=fashionassitant-db
+Environment variables (.env.example; same keys in .env.development
+and .env.production):
+  # OAuth 2.0 Web client ID (public)
+  VITE_GOOGLE_CLIENT_ID=
   VITE_ALLOWED_EMAIL=jlivanramirez7@gmail.com
+  # Server-only (not exposed to the browser):
+  FIRESTORE_DATABASE_ID=fashionassitant-db
+  GOOGLE_CLOUD_PROJECT=fashionassitant
 
-  VITE_FIREBASE_AUTH_DOMAIN differs per environment (section 10):
-    .env.development  fashionassitant.firebaseapp.com; dev uses
-                      signInWithPopup
-    .env.production   the app's own host (run.app host, or the
-                      custom domain if one is mapped), so
-                      signInWithRedirect goes through the same-origin
-                      /__/auth/ proxy in nginx.conf. Set after the
-                      first deploy (section 13).
-  All other values are the same in both files.
+  .env.development also sets DATA_BACKEND=memory, so local dev never
+  touches the real database.
 
-  Note: Firebase web config values are public identifiers, not
-  secrets (they ship in the page anyway). Committing .env.production
-  lets "gcloud run deploy --source ." build without extra build-arg
-  plumbing. Access is protected by sign-in, the security rules and
-  the API key referrer restriction. No real secrets exist in v1.
+  Note: VITE_* values end up in the page, and none of these values
+  is a secret (the OAuth client ID is a public identifier; there is
+  no client secret). Committing .env.production lets the Cloud Build
+  trigger build the image without build-arg plumbing, and the server
+  reads the same file at runtime (section 9), so Cloud Run needs no
+  service environment variables. The service account credentials
+  come from Cloud Run itself, never from a file.
 
 vite.config.ts (outline):
-  - plugins: basicSsl() for HTTPS in dev (camera needs HTTPS on a
-    phone), VitePWA({ registerType: "autoUpdate", manifest: {...} })
+  - plugins: basicSsl() for HTTPS in dev only (camera needs HTTPS on
+    a phone), VitePWA({ registerType: "autoUpdate", manifest: {...} })
   - manifest: name "Fashion Assistant", display "standalone" (iOS
     has no "fullscreen"), orientation "portrait", theme/background
     colours, icons
-  - workbox: precache app files; runtimeCaching CacheFirst for
-    /models/* and /wasm/* (models are tens of MB, above the default
-    2 MB precache limit); navigateFallbackDenylist [/^\/__\//] so
-    the service worker never answers /__/auth/ or /__/firebase/
-    with index.html
+  - workbox: precache app files (dev-only debug chunks and wasm
+    excluded); runtimeCaching CacheFirst for /models/* and /wasm/*
+    (models are tens of MB, above the default 2 MB precache limit);
+    navigateFallbackDenylist [/^\/api\//] so the service worker never
+    answers /api/* (including the GIS POST to /api/auth/google) with
+    index.html
+  - server: host true, proxy { "/api": "http://localhost:8080" } so
+    the Vite dev server forwards API calls to npm run dev:server
   - build.rollupOptions.input: index.html only. replay.html is a
     dev-only input served by the dev server; it never reaches dist/.
+  - test: tests/**/*.test.ts, environment node
 
 MediaPipe assets (scripts/setup-assets.mjs):
   - Copy node_modules/@mediapipe/tasks-vision/wasm/* -> public/wasm/
@@ -1267,143 +1429,140 @@ MediaPipe assets (scripts/setup-assets.mjs):
 
 Dockerfile:
 
-  FROM node:22-alpine AS build
+  # Build stage: install, typecheck, build the PWA, verify assets.
+  FROM node:24-alpine AS build
   WORKDIR /app
   COPY package.json package-lock.json ./
   COPY scripts ./scripts
   RUN npm ci
   COPY . .
   RUN npm run build
+  # Fail the build if the MediaPipe models or wasm are missing
+  # (setup-assets only warns when a download fails).
+  RUN test -s dist/models/pose_landmarker_lite.task \
+   && test -s dist/models/pose_landmarker_heavy.task \
+   && test -s dist/models/selfie_multiclass_256x256.tflite \
+   && ls dist/wasm/*.wasm >/dev/null
+  RUN npm prune --omit=dev --ignore-scripts
 
-  FROM nginx:1.27-alpine
-  COPY nginx.conf /etc/nginx/conf.d/default.conf
-  COPY --from=build /app/dist /usr/share/nginx/html
+  # Runtime stage: one Node process serves dist/ and /api.
+  FROM node:24-alpine
+  WORKDIR /app
+  ENV NODE_ENV=production
+  ENV PORT=8080
+  COPY --from=build /app/package.json ./
+  COPY --from=build /app/node_modules ./node_modules
+  COPY --from=build /app/dist ./dist
+  COPY --from=build /app/server ./server
+  COPY --from=build /app/src/types.ts ./src/types.ts
+  COPY --from=build /app/.env.production ./.env.production
   EXPOSE 8080
-
-nginx.conf (the project ID fashionassitant is typed in directly; it
-is a public identifier):
-
-  server {
-    listen 8080;
-    root /usr/share/nginx/html;
-    gzip on;
-    gzip_types text/css application/javascript application/json
-               application/wasm;
-    location / {
-      try_files $uri $uri/ /index.html;
-    }
-    location = /sw.js {
-      add_header Cache-Control "no-cache";
-    }
-    location /assets/ {
-      add_header Cache-Control "public, max-age=31536000, immutable";
-    }
-    # Same-origin Firebase Auth helper for signInWithRedirect
-    # (section 10)
-    location /__/auth/ {
-      proxy_pass https://fashionassitant.firebaseapp.com;
-      proxy_ssl_server_name on;
-      proxy_set_header Host fashionassitant.firebaseapp.com;
-    }
-    location /__/firebase/ {
-      proxy_pass https://fashionassitant.firebaseapp.com;
-      proxy_ssl_server_name on;
-      proxy_set_header Host fashionassitant.firebaseapp.com;
-    }
-  }
-
-  The /__/ prefix locations are longer than "/", so nginx uses them
-  instead of the index.html fallback. Do not add a
-  Cross-Origin-Opener-Policy: same-origin header (it breaks the dev
-  popup).
-
-firebase.json:
-
-  { "firestore": { "database": "fashionassitant-db",
-                   "rules": "firestore.rules",
-                   "indexes": "firestore.indexes.json" },
-    "emulators": { "auth": { "port": 9099 },
-                   "firestore": { "port": 8081 } } }
+  USER node
+  CMD ["node", "server/index.ts"]
 
 ======================================================================
 13. SETUP AND DEPLOYMENT RUNBOOK
 ======================================================================
-One-time Google Cloud + Firebase setup for project fashionassitant
-(needs a billing account for Cloud Run):
+One-time Google Cloud setup for project fashionassitant (needs a
+billing account for Cloud Run):
 
   1. gcloud auth login
-  2. gcloud projects create fashionassitant   (skip if it already
-                                               exists)
      gcloud config set project fashionassitant
+     (project and billing link already exist; otherwise
+     gcloud projects create fashionassitant and
      gcloud billing projects link fashionassitant
-       --billing-account=BILLING_ACCOUNT_ID
-  3. Budget alert (cost guardrail; expected cost is ~$0 because
-     Cloud Run scales to zero and Firestore stays in the free tier):
+       --billing-account=BILLING_ACCOUNT_ID)
+  2. Enable the APIs:
+     gcloud services enable run.googleapis.com
+       cloudbuild.googleapis.com artifactregistry.googleapis.com
+       firestore.googleapis.com
+  3. Firestore database fashionassitant-db (Native mode,
+     us-central1) already exists. Only if it were missing:
+     gcloud firestore databases create --database=fashionassitant-db
+       --location=us-central1 --type=firestore-native
+     Rules: console > Firestore > fashionassitant-db > Rules, paste
+     firestore.rules (deny all) and publish, replacing any older
+     rules.
+  4. Budget alert (cost guardrail; expected cost is ~$0):
      gcloud services enable billingbudgets.googleapis.com
      gcloud billing budgets create --billing-account=BILLING_ACCOUNT_ID
        --display-name="fashion-assistant" --budget-amount=10USD
        --threshold-rule=percent=0.5 --threshold-rule=percent=1.0
-  4. gcloud services enable run.googleapis.com
-       cloudbuild.googleapis.com artifactregistry.googleapis.com
-       firestore.googleapis.com identitytoolkit.googleapis.com
-  5. gcloud firestore databases create --database=fashionassitant-db
-       --location=us-central1 --type=firestore-native
-  6. npm install -g firebase-tools
-     firebase login
-     firebase projects:addfirebase fashionassitant
-  7. firebase apps:create WEB fashion-assistant --project fashionassitant
-     firebase apps:sdkconfig WEB APP_ID
-     -> copy the values into .env.development and .env.production
-        (both start with auth domain fashionassitant.firebaseapp.com)
-     -> nginx.conf already points the /__/ locations at
-        fashionassitant.firebaseapp.com
-  8. Firebase console > Authentication > Get started >
-     Sign-in method > Google > Enable (support email
-     jlivanramirez7@gmail.com)
-  9. npm run deploy:rules
+  5. OAuth consent screen (console > APIs & Services > OAuth consent
+     screen / Google Auth Platform): app name "Fashion Assistant",
+     user type External, publishing status Testing, add test user
+     jlivanramirez7@gmail.com, support email the same.
+  6. OAuth client ID (console > APIs & Services > Credentials >
+     Create credentials > OAuth client ID > Web application, name
+     "fashion-assistant-web"):
+       Authorized JavaScript origins:
+         https://<run.app host>, http://localhost:5173,
+         https://localhost:5173, http://localhost:8080
+       Authorized redirect URIs:
+         https://<run.app host>/api/auth/google,
+         https://localhost:5173/api/auth/google,
+         http://localhost:8080/api/auth/google
+     If the service does not exist yet, create the client with the
+     localhost entries now and add the run.app entries after the
+     first deploy (step 8). Changes can take a few minutes to apply.
+  7. Put the client ID (xxxx.apps.googleusercontent.com) into
+     VITE_GOOGLE_CLIENT_ID in .env.production and .env.development,
+     commit, and push to main.
+  8. Cloud Run continuous deployment (console > Cloud Run > Deploy
+     container > Service, "Continuously deploy from a repository"):
+       - connect GitHub through Cloud Build, pick the repository
+       - branch ^main$, build type Dockerfile, source location
+         /Dockerfile
+       - service name fashion-assistant, region us-central1,
+         "Allow unauthenticated invocations", max instances 2,
+         container port 8080
+     The trigger builds and deploys on every push to main. Note the
+     service URL (https://fashion-assistant-...run.app) and finish
+     step 6 with that host if it was not known yet.
+  9. Firestore access for the runtime service account: Cloud Run >
+     fashion-assistant > Security shows the service account
+     (default: PROJECT_NUMBER-compute@developer.gserviceaccount.com).
+     If it lacks Firestore access (the server logs PERMISSION_DENIED),
+     grant it:
+       gcloud projects add-iam-policy-binding fashionassitant
+         --member=serviceAccount:SERVICE_ACCOUNT_EMAIL
+         --role=roles/datastore.user
+  10. Checks on the deployed URL:
+       - https://<host>/api/health returns { "ok": true }
+       - signed out, https://<host>/api/me returns 401
+       - open the URL in Safari on the iPhone, sign in with
+         jlivanramirez7@gmail.com, run a test scan, confirm a
+         document under users/{uid}/scans in fashionassitant-db
+         (Firestore Studio)
+       - sign in with a different Google account: it ends on
+         "This app is private." and /api/me stays 401
+       - Share > Add to Home Screen, open the installed app, sign
+         out and sign in again from it: the redirect must return to
+         the installed app signed in, and stay signed in after
+         closing and reopening it
+       - repeat sign-in on Android Chrome
 
-First deploy (two passes, because the run.app host is only known
-after the first deploy):
-
-  10. npm run deploy
-      -> prints the service URL (https://fashion-assistant-...run.app)
-  11. In .env.production set
-      VITE_FIREBASE_AUTH_DOMAIN=<the run.app host> (no https://)
-  12. Google Cloud console > APIs & Services > Credentials > OAuth
-      2.0 Client IDs > the Web client (auto created by Google
-      Service) > Authorized redirect URIs > add
-      https://<app-host>/__/auth/handler
-  13. Firebase console > Authentication > Settings > Authorized
-      domains > add the run.app host
-  14. Google Cloud console > APIs & Services > Credentials > the
-      browser API key > restrict HTTP referrers to the run.app URL,
-      https://fashionassitant.firebaseapp.com (dev popup) and localhost
-  15. npm run deploy (second pass, with the new auth domain)
-  16. Check that https://<app-host>/__/auth/handler returns the
-      Firebase auth page, not the app.
-  17. Open the URL in Safari on the iPhone, sign in, run a test scan,
-      confirm a document appears under users/{uid}/scans in
-      Firestore. Sign in with a different Google account and confirm
-      it is refused.
-  18. Share > Add to Home Screen, open the installed app, sign out
-      and sign in again from it: the redirect must return to the app
-      signed in (this is where popup sign-in fails).
-
-  If a custom domain is mapped later, repeat 11-15 with that host.
+  If a custom domain is mapped later, add its origin and
+  /api/auth/google redirect URI to the OAuth client (step 6).
 
 Local development:
 
   - npm install (also fetches MediaPipe assets)
-  - npm run dev -> https://<your-PC-LAN-IP>:5173 on the phone (same
-    Wi-Fi), accept the self-signed certificate warning
-  - Dev uses signInWithPopup with the auth domain
-    fashionassitant.firebaseapp.com from .env.development (no proxy
-    needed). Add the LAN IP to Firebase authorized domains. If it is
-    not accepted, use an HTTPS tunnel (e.g. cloudflared) and add the
-    tunnel host instead.
-  - Optional: firebase emulators:start to test rules and auth
-    without touching production data
-  - npm test for the geometry/measurement unit tests
+  - Terminal 1: npm run dev:server -> API + static server on
+    http://localhost:8080 with the in-memory backend
+    (DATA_BACKEND=memory from .env.development); data is lost on
+    restart and the real database is never touched.
+  - Terminal 2: npm run dev -> Vite on https://localhost:5173
+    (self-signed certificate), which proxies /api to port 8080.
+  - Sign-in needs VITE_GOOGLE_CLIENT_ID in .env.development and the
+    localhost origins/redirect URIs from step 6. GIS rejects LAN IP
+    origins, so on a phone either test the deployed URL or use an
+    HTTPS tunnel (e.g. cloudflared) and add the tunnel host as an
+    origin and its /api/auth/google as a redirect URI.
+  - Optional: run the server against the real database with
+    DATA_BACKEND=firestore after gcloud auth application-default
+    login (your own account needs Firestore access).
+  - npm test for all unit tests (no Google or GCP calls)
 
 Debug capture and replay (dev builds only; nothing is uploaded):
 
@@ -1417,7 +1576,7 @@ Debug capture and replay (dev builds only; nothing is uploaded):
      diagnostics, so pipeline changes can be re-run on the same
      scans without standing in front of the phone again.
 
-Later deploys: npm run deploy (rules: npm run deploy:rules).
+Later deploys: push to main (manual fallback: npm run deploy).
 
 ======================================================================
 14. MILESTONES
@@ -1425,16 +1584,20 @@ Later deploys: npm run deploy (rules: npm run deploy:rules).
 Each milestone ends in something testable on your own phone; dates
 are not set yet.
 
-  M0  Scaffolding and deploy: repo layout, Vite + PWA, Firebase init,
-      Google sign-in with the allowlist (signInWithRedirect through
-      the same-origin /__/auth/ helper in production, popup in dev),
-      Firestore rules, Dockerfile, first Cloud Run deploy, then set
-      VITE_FIREBASE_AUTH_DOMAIN + the OAuth redirect URI and
-      redeploy; billing budget alert.
+  M0  Scaffolding and deploy: repo layout, Vite + PWA, Node server
+      (static serving, /api, memory + Firestore stores), GIS sign-in
+      in redirect mode with server-side ID-token verification,
+      allowlist and session cookie, deny-all Firestore rules,
+      Dockerfile, OAuth consent screen + client ID, Cloud Run
+      continuous deployment from main, runtime service account with
+      roles/datastore.user; billing budget alert.
       Exit: the run.app URL signs in jlivanramirez7@gmail.com both
       from the installed iOS home-screen app and from Android
-      Chrome, refuses another Google account, and writes + reads a
-      test scan document; the budget alert exists.
+      Chrome (and stays signed in after reopening the installed
+      app), refuses another Google account, /api/me is 401 when
+      signed out, and a test scan is written + read back through
+      the API (also after saving it offline via the outbox); the
+      budget alert exists.
   M1  Capture skeleton: front (selfie) camera with mirrored preview
       (computation on unmirrored frames), permissions on the Start
       tap, automatic device profile (model detection, first
@@ -1549,12 +1712,34 @@ Risks:
     scan breaks midway.
     Mitigation: unlock everything on the Start tap; resume from the
     last completed pose.
-  - Sign-in fails in the installed iOS home-screen app (popups are
-    unreliable there).
-    Mitigation: signInWithRedirect with the same-origin /__/auth/
-    helper proxied by nginx; no COOP same-origin header (breaks the
-    dev popup); test the installed iOS app and Android Chrome in
-    M0.
+  - GIS sign-in in the installed iOS home-screen app: the redirect
+    to Google may open outside the standalone window or not return
+    to it (popups are unreliable there).
+    Mitigation: GIS redirect mode only (no popup, no One Tap), with
+    the form POST landing on our own /api/auth/google; test the
+    installed iOS app and Android Chrome in M0. Fallback: sign in
+    once in Safari, then open the installed app.
+  - Session cookie in standalone mode: iOS keeps a separate cookie
+    store for home-screen apps and may clear it (storage pressure,
+    7-day script-storage limits) -> unexpected sign-outs.
+    Mitigation: first-party HttpOnly cookie set by a top-level
+    navigation (not script storage), 30-day Max-Age; signing in
+    again is one tap; check in M0 that a reopened installed app is
+    still signed in.
+  - Service account permissions: the Cloud Run runtime account
+    lacks Firestore access, or the database id is wrong -> every
+    data call fails (PERMISSION_DENIED / NOT_FOUND).
+    Mitigation: grant roles/datastore.user (section 13, step 9);
+    FIRESTORE_DATABASE_ID comes from .env.production; the M0 check
+    writes and reads a scan through the API.
+  - Cold starts: Cloud Run scales to zero, so the first request
+    after idle waits ~1-3 s while the container starts.
+    Mitigation: small image and dependency set; the service worker
+    serves the app shell from cache, so only /api calls wait;
+    min instances 1 is possible later (at a cost) if it annoys.
+  - Lost scan when offline at the end of a scan.
+    Mitigation: localStorage outbox with idempotent clientId
+    (section 8), flushed on app start and when back online.
   - Large MediaPipe models slow the first load on mobile data.
     Mitigation: service-worker cache after first load; show a
     download progress bar.

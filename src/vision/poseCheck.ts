@@ -3,6 +3,8 @@
 //
 // Priority: no-person > framing (step-back / move-closer / center) >
 // orientation (face-phone / turn-side / turn-back) > arms > hold-still > ok.
+// The back view is accepted on ANY back signal (see backViewEvidence); the
+// capture screen can also waive orientation (trustOrientation) after a while.
 
 import { LM, type Landmark, type PoseHint, type ViewName } from "../types";
 
@@ -10,6 +12,14 @@ export interface PoseCheckOptions {
   /** Frame width / height. Landmarks are normalized per axis, so angles and
    *  ratios need it. Default 9/16 (portrait). */
   aspect?: number;
+  /** Mean face visibility seen on the front step; a clear drop from it
+   *  counts as evidence of a back view. */
+  frontFaceVisibility?: number;
+  /** Skip the which-way-am-I-facing tests (back: face / mirroring, side:
+   *  which shoulder). Width checks still apply. The capture screen sets this
+   *  when the user has been stuck on the orientation hint for a while: the
+   *  live model is unreliable at telling front from back. */
+  trustOrientation?: boolean;
 }
 
 export const POSE_THRESHOLDS = {
@@ -36,8 +46,13 @@ export const POSE_THRESHOLDS = {
   armMaxDeg: 60,
   /** Side view: arms relaxed means below this angle. */
   sideArmMaxDeg: 30,
-  /** Max landmark motion over the history window, fraction of frame height. */
-  stillTolerance: 0.015,
+  /** Back view: face visibility this far below the front step's counts as turned away. */
+  faceDropFromFront: 0.15,
+  /** Back view: nose this much deeper than the shoulder midpoint (MediaPipe z, x-scaled). */
+  noseBehindShoulders: 0.02,
+  /** Max landmark motion over the history window, fraction of frame height.
+   *  The lite model jitters a few mm at 2-3 m, so this cannot be too tight. */
+  stillTolerance: 0.022,
 } as const;
 
 const FACE = [LM.nose, 2, 5, LM.mouthLeft, LM.mouthRight];
@@ -147,6 +162,27 @@ function framingHint(lm: Landmark[], aspect: number): PoseHint | null {
   return null;
 }
 
+/**
+ * Any one signal that the user has their back to the camera. MediaPipe
+ * keeps predicting face landmarks from behind, often with high visibility,
+ * so face visibility alone is not enough:
+ * - face visibility low (absolute, or clearly below the front step's);
+ * - shoulders mirrored: the user's left shoulder on image left (unmirrored
+ *   frame) means we see their back;
+ * - nose deeper than the shoulders (z grows away from the camera).
+ */
+export function backViewEvidence(lm: Landmark[], frontFaceVisibility?: number): boolean {
+  const T = POSE_THRESHOLDS;
+  const face = faceVisibility(lm);
+  if (face < T.faceVisible) return true;
+  if (frontFaceVisibility !== undefined && face < frontFaceVisibility - T.faceDropFromFront) return true;
+  const ls = lm[LM.leftShoulder], rs = lm[LM.rightShoulder];
+  if (ls.x < rs.x) return true;
+  const nz = lm[LM.nose].z, sz = (ls.z + rs.z) / 2;
+  if (Number.isFinite(nz) && Number.isFinite(sz) && nz - sz > T.noseBehindShoulders) return true;
+  return false;
+}
+
 function armsHint(lm: Landmark[], aspect: number): PoseHint | null {
   const T = POSE_THRESHOLDS;
   const l = armAngleDeg(lm, "left", aspect);
@@ -187,7 +223,8 @@ export function checkPose(
     const arms = armsHint(lm, aspect);
     if (arms) return arms;
   } else if (view === "back") {
-    if (ratio < T.frontalRatio || face >= T.faceVisible) return "turn-back";
+    if (ratio < T.frontalRatio) return "turn-back";
+    if (!opts.trustOrientation && !backViewEvidence(lm, opts.frontFaceVisibility)) return "turn-back";
     const arms = armsHint(lm, aspect);
     if (arms) return arms;
   } else {
@@ -199,7 +236,7 @@ export function checkPose(
     const ls = lm[LM.leftShoulder], rs = lm[LM.rightShoulder];
     const noseDx = (lm[LM.nose].x - (ls.x + rs.x) / 2) * aspect;
     const rightToPhone = Math.abs(noseDx) > 0.005 ? noseDx > 0 : rs.z < ls.z;
-    if (!rightToPhone) return "turn-side";
+    if (!rightToPhone && !opts.trustOrientation) return "turn-side";
     const l = armAngleDeg(lm, "left", aspect);
     const r = armAngleDeg(lm, "right", aspect);
     if (l > T.sideArmMaxDeg || r > T.sideArmMaxDeg) return "arms-down";

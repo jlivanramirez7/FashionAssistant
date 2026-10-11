@@ -95,17 +95,36 @@ describe("checkPose", () => {
     expect(checkPose("side", makeBody({ view: "side", armDeg: 45 }))).toBe("arms-down");
   });
 
-  it("back: turn-back when the face is visible or sideways", () => {
+  it("back: turn-back when facing the phone or sideways", () => {
     expect(checkPose("back", makeBody({ view: "front" }))).toBe("turn-back");
     expect(checkPose("back", makeBody({ view: "side" }))).toBe("turn-back");
-    expect(checkPose("back", makeBody({ view: "back", faceVis: 0.9 }))).toBe("turn-back");
+  });
+
+  it("back: accepted on any back signal even when MediaPipe reports a visible face", () => {
+    // Mirrored shoulders alone are enough (the model hallucinates a face from behind).
+    expect(checkPose("back", makeBody({ view: "back", faceVis: 0.9 }))).toBe("ok");
+    // Front-ordered shoulders but the face clearly dimmer than on the front step.
+    expect(checkPose("back", makeBody({ view: "front", faceVis: 0.7 }), undefined, { frontFaceVisibility: 0.95 })).toBe("ok");
+    expect(checkPose("back", makeBody({ view: "front", faceVis: 0.9 }), undefined, { frontFaceVisibility: 0.95 })).toBe("turn-back");
+    // Nose deeper than the shoulders.
+    const b = makeBody({ view: "front" });
+    b[LM.nose] = { ...b[LM.nose], z: 0.2 };
+    expect(checkPose("back", b)).toBe("ok");
+  });
+
+  it("trustOrientation waives the facing tests but not the width tests", () => {
+    expect(checkPose("back", makeBody({ view: "front" }), undefined, { trustOrientation: true })).toBe("ok");
+    expect(checkPose("back", makeBody({ view: "side" }), undefined, { trustOrientation: true })).toBe("turn-back");
+    expect(checkPose("side", makeBody({ view: "side", wrongSide: true }), undefined, { trustOrientation: true })).toBe("ok");
+    expect(checkPose("side", makeBody({ view: "front" }), undefined, { trustOrientation: true })).toBe("turn-side");
+    expect(checkPose("front", makeBody({ view: "back" }), undefined, { trustOrientation: true })).toBe("face-phone");
   });
 
   it("hold-still from history", () => {
     const b = makeBody();
     const still = [jitter(b, 0.002, 0.001), jitter(b, -0.001, 0.002), b];
     expect(checkPose("front", b, still)).toBe("ok");
-    const moving = [jitter(b, 0.03, 0), jitter(b, 0.015, 0)];
+    const moving = [jitter(b, 0.06, 0), jitter(b, 0.03, 0)];
     expect(checkPose("front", b, moving)).toBe("hold-still");
     expect(checkPose("front", b, [])).toBe("ok");
   });

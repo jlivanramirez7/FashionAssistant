@@ -9,7 +9,7 @@ import { config, ensureHeavy, ensureLive, ensureSegmenter } from "./runtime";
 export { MODEL_VERSIONS, delegates as visionDelegates, closeAll as closeVision } from "./runtime";
 export { detectPoseLive, detectPoseHeavy } from "./pose";
 export { segmentPerson } from "./segmentation";
-export { checkPose, type PoseCheckOptions } from "./poseCheck";
+export { checkPose, faceVisibility, type PoseCheckOptions } from "./poseCheck";
 export { regionCrops, type CropBox } from "./crops";
 
 export interface InitVisionOptions {

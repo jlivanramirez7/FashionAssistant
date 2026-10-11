@@ -5,7 +5,7 @@
 import { getScan } from "../../data/scans";
 import type { ScanDoc } from "../../types";
 import { closeFrames, errorMessage, type AppContext } from "../context";
-import { button, h, screen, setChildren } from "../dom";
+import { button, h, screen, setChildren, topBar } from "../dom";
 import { copyAllText, formatDate, groupMeasurements, retakeViewsFor, visibleMeasurements } from "../format";
 import { startFromTap } from "../hardware";
 import { createMeasurementRow } from "../parts/measurementRow";
@@ -31,7 +31,7 @@ export function render(root: HTMLElement, ctx: AppContext): () => void {
   if (state.name !== "results") return () => undefined;
   let alive = true;
   const { root: el, body, actions } = screen("screen-results");
-  const dateEl = h("p", { class: "muted" });
+  const dateEl = h("p", { class: "muted subtitle" });
   const list = h("div", { class: "measurements" }, h("p", { class: "muted" }, "Loading..."));
   const notice = h("p", { class: "notice" });
   notice.hidden = true;
@@ -39,7 +39,7 @@ export function render(root: HTMLElement, ctx: AppContext): () => void {
     ctx.setUnits(u);
     if (scan) draw(scan);
   });
-  body.append(h("div", { class: "title-row" }, h("h1", null, "Your measurements"), toggle), dateEl, notice, list);
+  body.append(topBar("Measurements", () => ctx.dispatch({ type: "BACK" }), toggle), dateEl, notice, list);
   root.appendChild(el);
 
   let scan: ScanDoc | null = null;
@@ -54,16 +54,17 @@ export function render(root: HTMLElement, ctx: AppContext): () => void {
       setChildren(
         list,
         groups.map((g) =>
-          h("div", { class: "group" },
+          h("section", { class: "group card" },
             h("h2", null, g.title),
             g.keys.map((k) => createMeasurementRow({ key: k, value: shown[k]!, bodyType: sc.bodyType, units: ctx.units })),
           ),
         ),
-        h("p", { class: "legend" },
-          h("span", { class: "dot dot-green" }), " good  ",
-          h("span", { class: "dot dot-amber" }), " fair  ",
-          h("span", { class: "dot dot-red" }), " low confidence. Tap a row to see where it is measured.",
+        h("div", { class: "legend" },
+          h("span", { class: "legend-item" }, h("span", { class: "dot dot-green" }), "Good"),
+          h("span", { class: "legend-item" }, h("span", { class: "dot dot-amber" }), "Fair"),
+          h("span", { class: "legend-item" }, h("span", { class: "dot dot-red" }), "Low confidence"),
         ),
+        h("p", { class: "muted small center" }, "Tap a row to see where it is measured."),
       );
     }
 
@@ -86,7 +87,7 @@ export function render(root: HTMLElement, ctx: AppContext): () => void {
     }, "btn secondary");
     const retakeBtn =
       retakeViews.length > 0
-        ? button("Retake amber/red", () => {
+        ? button("Retake low-confidence steps", () => {
             retakeBtn!.disabled = true;
             // Camera, motion and voice are re-armed inside this tap.
             startFromTap(ctx)
@@ -102,8 +103,11 @@ export function render(root: HTMLElement, ctx: AppContext): () => void {
         : null;
     setChildren(
       actions,
-      h("div", { class: "btn-row" }, copyBtn, retakeBtn),
-      button("Add tape measurements", () => ctx.dispatch({ type: "ADD_TAPE" }), "btn secondary"),
+      h("div", { class: "btn-row" },
+        copyBtn,
+        button("Add tape values", () => ctx.dispatch({ type: "ADD_TAPE" }), "btn secondary"),
+      ),
+      retakeBtn,
       button("Done", () => ctx.dispatch({ type: "DONE" }), "btn primary"),
     );
   }

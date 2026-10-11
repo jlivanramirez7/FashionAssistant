@@ -6,7 +6,7 @@ import { computeCorrectionFactors, tapeScanCount, validationStats } from "../../
 import type { BodyType, ScanDoc } from "../../types";
 import { formatSmallLength } from "../../units";
 import { errorMessage, type AppContext } from "../context";
-import { button, h, linkButton, screen, setChildren } from "../dom";
+import { button, h, screen, setChildren, topBar } from "../dom";
 import { isVisibleKey, measurementLabel } from "../format";
 import { createUnitToggle } from "../parts/unitToggle";
 
@@ -24,7 +24,7 @@ export function render(root: HTMLElement, ctx: AppContext): () => void {
   const uid = ctx.user?.uid;
   let scans: ScanDoc[] | null = null;
   const { root: el, body, actions } = screen("screen-summary");
-  const countEl = h("p", { class: "muted" }, "Loading...");
+  const countEl = h("p", { class: "muted subtitle" }, "Loading...");
   const table = h("div", { class: "summary-table" });
   const status = h("p", { class: "notice", role: "status" });
   status.hidden = true;
@@ -33,11 +33,10 @@ export function render(root: HTMLElement, ctx: AppContext): () => void {
     draw();
   });
   body.append(
-    h("div", { class: "title-row" }, h("h1", null, "Validation summary"), toggle),
+    topBar("Validation", () => ctx.dispatch({ type: "BACK" }), toggle),
     countEl,
-    table,
+    h("section", { class: "card" }, table),
     status,
-    linkButton("< Back", () => ctx.dispatch({ type: "BACK" })),
   );
 
   const recompute = button("Recompute correction k", () => {

@@ -57,3 +57,24 @@ export function button(label: string, onClick: () => void, cls = "btn"): HTMLBut
 export function linkButton(label: string, onClick: () => void): HTMLButtonElement {
   return button(label, onClick, "link");
 }
+
+/** Screen header: optional round back button, title, optional right-side control. */
+export function topBar(title: string, onBack: (() => void) | null, right?: Child): HTMLElement {
+  let back: HTMLButtonElement | null = null;
+  if (onBack) {
+    back = button("‹", onBack, "icon-btn back-btn");
+    back.setAttribute("aria-label", "Back");
+  }
+  return h("header", { class: "top-bar" }, back, h("h1", null, title), right ? h("div", { class: "top-bar-right" }, right) : null);
+}
+
+/** Tappable list row: label, optional detail, chevron. */
+export function listRow(label: string, onClick: () => void, detail?: string, cls = ""): HTMLButtonElement {
+  const b = h("button", { class: `list-row ${cls}`.trim(), type: "button" },
+    h("span", { class: "list-label" }, label),
+    detail ? h("span", { class: "list-detail" }, detail) : null,
+    h("span", { class: "chev", "aria-hidden": "true" }, "›"),
+  );
+  b.addEventListener("click", onClick);
+  return b;
+}

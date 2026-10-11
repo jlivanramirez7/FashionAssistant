@@ -20,12 +20,20 @@ export function render(root: HTMLElement, ctx: AppContext): () => void {
   const skip = button("Continue without level (dev)", () => advance(), "btn small");
   skip.hidden = true;
 
+  const cancel = button("✕", () => ctx.dispatch({ type: "CANCEL" }), "icon-btn");
+  cancel.setAttribute("aria-label", "Cancel scan");
   const overlay = h("div", { class: "camera-overlay" },
-    h("p", { class: "overlay-title" }, "Lean the phone against a wall, screen facing you"),
+    h("div", { class: "capture-top-row" },
+      h("div", { class: "overlay-title" },
+        h("p", { class: "eyebrow" }, "Set up"),
+        h("p", null, "Stand the phone on the floor, leaning back against a wall or box, screen facing you."),
+      ),
+      cancel,
+    ),
     h("div", { class: "overlay-spacer" }),
     gauge.el,
     note,
-    h("div", { class: "overlay-actions" }, skip, button("Cancel", () => ctx.dispatch({ type: "CANCEL" }), "btn small ghost")),
+    h("div", { class: "overlay-actions" }, skip),
   );
   const stage = h("div", { class: "camera-stage" }, s.video, overlay);
   border.el.appendChild(stage);

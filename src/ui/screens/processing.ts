@@ -22,7 +22,8 @@ export function render(root: HTMLElement, ctx: AppContext): () => void {
   const bar = h("div", { class: "progress-fill" });
   const stageEl = h("p", { class: "stage" }, "Getting ready");
   const box = h("div", { class: "processing-box" },
-    h("h1", null, "Calculating your measurements..."),
+    h("div", { class: "spinner", "aria-hidden": "true" }),
+    h("h1", null, "Calculating your measurements"),
     h("div", { class: "progress", role: "progressbar", "aria-valuemin": 0, "aria-valuemax": 100 }, bar),
     stageEl,
     h("p", { class: "muted" }, "This takes about 5-15 seconds. Everything stays on your phone."),

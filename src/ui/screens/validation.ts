@@ -4,7 +4,7 @@ import { getScan, updateScan } from "../../data/scans";
 import type { MeasurementKey, ScanDoc, Units } from "../../types";
 import { formatLength, lengthInputValue } from "../../units";
 import { errorMessage, type AppContext } from "../context";
-import { button, h, linkButton, screen, setChildren } from "../dom";
+import { button, h, screen, setChildren, topBar } from "../dom";
 import { buildTapeMeasurements, measurementLabel, TAPE_KEYS, tapeForField, visibleMeasurements } from "../format";
 import { createUnitToggle } from "../parts/unitToggle";
 
@@ -33,12 +33,13 @@ export function render(root: HTMLElement, ctx: AppContext): () => void {
   });
 
   body.append(
-    h("div", { class: "title-row" }, h("h1", null, "Tape measurements"), toggle),
-    h("label", { class: "field" }, h("span", { class: "field-label" }, "Subject"), subject),
-    h("p", { class: "muted small" }, 'All fields are optional. Use "me" for yourself, or e.g. "Person 3" for a test person.'),
-    table,
+    topBar("Tape values", () => ctx.dispatch({ type: "BACK" }), toggle),
+    h("section", { class: "card" },
+      h("label", { class: "field" }, h("span", { class: "field-label" }, "Subject"), subject),
+      h("p", { class: "hint-text" }, 'All fields are optional. Use "me" for yourself, or e.g. "Person 3" for a test person.'),
+    ),
+    h("section", { class: "card" }, table),
     status,
-    linkButton("< Back", () => ctx.dispatch({ type: "BACK" })),
   );
   const save = button("Save", onSave, "btn primary");
   actions.append(save);

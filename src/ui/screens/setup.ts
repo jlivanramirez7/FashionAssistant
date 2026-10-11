@@ -9,7 +9,7 @@ import type { BodyType, Units } from "../../types";
 import { cmToFeetInches, parseHeight } from "../../units";
 import { errorMessage, type AppContext } from "../context";
 import { loadDebug } from "../debug";
-import { button, h, linkButton, screen, setChildren } from "../dom";
+import { button, h, screen, setChildren, topBar } from "../dom";
 import { startFromTap } from "../hardware";
 import { createUnitToggle } from "../parts/unitToggle";
 
@@ -81,13 +81,13 @@ export function render(root: HTMLElement, ctx: AppContext): () => void {
   const radios = BODY_TYPES.map((b) => {
     const input = h("input", { type: "radio", name: "bodyType", value: b.value });
     input.checked = b.value === currentBody;
-    return { b, input, label: h("label", { class: "radio" }, input, b.label) };
+    return { b, input, label: h("label", { class: "seg-option" }, input, h("span", null, b.label)) };
   });
 
   // --- checklist (reminders; they do not block Start)
   const checklist = CHECKLIST.map((text) => {
     const c = h("input", { type: "checkbox" });
-    return h("label", { class: "check" }, c, text);
+    return h("label", { class: "check" }, c, h("span", null, text));
   });
 
   // --- dev-only debug capture toggle
@@ -104,17 +104,27 @@ export function render(root: HTMLElement, ctx: AppContext): () => void {
   error.hidden = true;
 
   body.append(
-    h("div", { class: "title-row" }, h("h1", null, "Setup"), toggle),
-    h("div", { class: "field" }, h("label", { class: "field-label" }, "Your height"), heightFields),
-    h("p", { class: "tip" }, "Tip: measure your height against a wall once - don't guess."),
-    h("fieldset", { class: "field" }, h("legend", { class: "field-label" }, "Body type (optional)"), radios.map((r) => r.label)),
-    h("div", { class: "field" }, h("p", { class: "field-label" }, "Before you start:"), checklist),
+    topBar("New scan", () => ctx.dispatch({ type: "BACK" }), toggle),
+    h("section", { class: "card" },
+      h("label", { class: "field-label" }, "Your height"),
+      heightFields,
+      h("p", { class: "hint-text" }, "Measure against a wall once rather than guessing - every other measurement is scaled from it."),
+    ),
+    h("section", { class: "card" },
+      h("fieldset", { class: "field" },
+        h("legend", { class: "field-label" }, "Body type ", h("span", { class: "optional" }, "optional")),
+        h("div", { class: "segmented" }, radios.map((r) => r.label)),
+      ),
+    ),
+    h("section", { class: "card" },
+      h("p", { class: "field-label" }, "Before you start"),
+      h("div", { class: "checklist" }, checklist),
+    ),
     debugSlot,
     error,
-    linkButton("< Back", () => ctx.dispatch({ type: "BACK" })),
   );
 
-  const start = button("Start", onStart, "btn primary");
+  const start = button("Start scan", onStart, "btn primary");
   actions.append(start);
   root.appendChild(el);
 
@@ -149,7 +159,7 @@ export function render(root: HTMLElement, ctx: AppContext): () => void {
         error.textContent = `Could not start the camera: ${errorMessage(e)}. Allow camera access and try again.`;
         error.hidden = false;
         start.disabled = false;
-        start.textContent = "Start";
+        start.textContent = "Start scan";
       });
   }
 

@@ -16,8 +16,8 @@ export default defineConfig(({ command }) => ({
         description: "Measure your body for clothing, hands-free.",
         display: "standalone",
         orientation: "portrait",
-        theme_color: "#111111",
-        background_color: "#111111",
+        theme_color: "#0d0d10",
+        background_color: "#0d0d10",
         icons: [
           { src: "/icons/icon-192.png", sizes: "192x192", type: "image/png" },
           { src: "/icons/icon-512.png", sizes: "512x512", type: "image/png" },

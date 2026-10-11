@@ -13,13 +13,19 @@ export function render(root: HTMLElement, ctx: AppContext): () => void {
   msg.hidden = !error;
   body.append(
     h("div", { class: "hero" },
+      h("img", { class: "brand-mark", src: "/icons/icon-192.png", alt: "", width: 88, height: 88 }),
       h("h1", null, "Fashion Assistant"),
-      h("p", { class: "lead" }, "Measure yourself for clothes with your phone"),
+      h("p", { class: "lead" }, "Measure yourself for clothes with just your phone."),
+      h("ul", { class: "hero-points" },
+        h("li", null, "Three quick poses, hands-free"),
+        h("li", null, "20+ tailoring measurements"),
+        h("li", null, "Photos never leave your phone"),
+      ),
     ),
     msg,
   );
   const container = h("div", { class: "gis-button" });
-  const loading = h("p", { class: "muted" }, "Loading sign-in...");
+  const loading = h("p", { class: "muted center" }, "Loading sign-in...");
   actions.append(container, loading);
   root.appendChild(el);
 

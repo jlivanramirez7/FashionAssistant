@@ -4,7 +4,7 @@ import { deleteAllMyData } from "../../data/deleteAll";
 import { deleteScan, listScans } from "../../data/scans";
 import type { ScanDoc } from "../../types";
 import { errorMessage, type AppContext } from "../context";
-import { button, h, linkButton, screen, setChildren } from "../dom";
+import { button, h, listRow, screen, setChildren, topBar } from "../dom";
 import { formatDate } from "../format";
 
 const SWIPE_OPEN_PX = 60;
@@ -14,7 +14,7 @@ function scanRow(scan: ScanDoc, onOpen: () => void, onDelete: () => void): HTMLE
   const content = h("button", { class: "history-item", type: "button" },
     h("span", { class: "h-date" }, formatDate(scan.createdAt)),
     h("span", { class: "h-label" }, scan.subjectLabel || "me"),
-    h("span", { class: "h-chev", "aria-hidden": "true" }, ">"),
+    h("span", { class: "chev", "aria-hidden": "true" }, "›"),
   );
   const row = h("div", { class: "history-row" }, del, content);
 
@@ -61,7 +61,7 @@ function scanRow(scan: ScanDoc, onOpen: () => void, onDelete: () => void): HTMLE
 export function render(root: HTMLElement, ctx: AppContext): () => void {
   let alive = true;
   const uid = ctx.user?.uid;
-  const { root: el, body, actions } = screen("screen-history");
+  const { root: el, body } = screen("screen-history");
   const list = h("div", { class: "history-list" }, h("p", { class: "muted" }, "Loading..."));
   const status = h("p", { class: "error", role: "alert" });
   status.hidden = true;
@@ -70,19 +70,18 @@ export function render(root: HTMLElement, ctx: AppContext): () => void {
   confirmBox.hidden = true;
 
   body.append(
-    h("div", { class: "title-row" }, h("h1", null, "History"), linkButton("< Back", () => ctx.dispatch({ type: "BACK" }))),
-    h("p", { class: "muted small" }, "Swipe a scan left to delete it."),
-    list,
+    topBar("History", () => ctx.dispatch({ type: "BACK" })),
+    h("p", { class: "muted small subtitle" }, "Swipe a scan left to delete it."),
+    h("div", { class: "card list" }, list),
     status,
-    h("div", { class: "row-links column" },
-      linkButton("Validation summary >", () => ctx.dispatch({ type: "OPEN_VALIDATION_SUMMARY" })),
-      linkButton("Delete all my data", () => {
+    h("div", { class: "card list" },
+      listRow("Validation summary", () => ctx.dispatch({ type: "OPEN_VALIDATION_SUMMARY" }), "Accuracy vs tape"),
+      listRow("Delete all my data", () => {
         confirmBox.hidden = false;
-      }),
+      }, undefined, "danger"),
     ),
     confirmBox,
   );
-  actions.append(button("Back", () => ctx.dispatch({ type: "BACK" }), "btn primary"));
   root.appendChild(el);
 
   const yes = button("Delete everything", () => {
@@ -114,7 +113,7 @@ export function render(root: HTMLElement, ctx: AppContext): () => void {
 
   function draw(scans: ScanDoc[]): void {
     if (scans.length === 0) {
-      setChildren(list, h("p", null, "No scans yet."));
+      setChildren(list, h("p", { class: "muted empty" }, "No scans yet."));
       return;
     }
     setChildren(

@@ -2,6 +2,7 @@
 import { defineConfig } from "vite";
 import basicSsl from "@vitejs/plugin-basic-ssl";
 import { VitePWA } from "vite-plugin-pwa";
+import pkg from "./package.json" with { type: "json" };
 
 // Design doc section 12. replay.html is served by the dev server only;
 // the production build input is index.html alone.
@@ -42,8 +43,12 @@ export default defineConfig(({ command }) => ({
       },
     }),
   ],
-  // Build stamp shown on Home and in troubleshooting reports.
-  define: { __BUILD_ID__: JSON.stringify(new Date().toISOString().slice(0, 16).replace("T", " ") + " UTC") },
+  // Version (package.json, bumped with every release) and build stamp,
+  // shown on Home and in troubleshooting reports.
+  define: {
+    __APP_VERSION__: JSON.stringify(pkg.version),
+    __BUILD_ID__: JSON.stringify(new Date().toISOString().slice(0, 16).replace("T", " ") + " UTC"),
+  },
   server: { host: true, proxy: { "/api": "http://localhost:8080" } },
   build: {
     rollupOptions: { input: "index.html" },

@@ -15,7 +15,7 @@ import { diagnosticsEnabled, setDiagnosticsEnabled } from "../../diagnostics/set
 import type { DiagReport } from "../../types";
 import { errorMessage, type AppContext } from "../context";
 import { button, copyTextFrom, h, screen, setChildren, topBar } from "../dom";
-import { formatDate } from "../format";
+import { formatDateTime } from "../format";
 
 const OUTCOME_LABEL: Record<DiagReport["outcome"], string> = {
   "in-progress": "In progress",
@@ -47,7 +47,7 @@ export function render(root: HTMLElement, ctx: AppContext): () => void {
       h("label", { class: "check" }, toggle, h("span", null, "Save troubleshooting data")),
       h("p", { class: "hint-text" },
         "When on, each scan uploads its photos, the per-frame pipeline results and the on-screen feedback to your account. " +
-          "After a failed scan, tap Copy latest report and paste it into your message.",
+          "After a failed scan, tap Copy latest report and paste it into your message. Each report shows when it was made and the app version.",
       ),
     ),
     uploading,
@@ -148,9 +148,11 @@ export function render(root: HTMLElement, ctx: AppContext): () => void {
     let open: HTMLElement | null = null;
     const row = h("section", { class: "card diag-row" });
     const head = h("button", { class: "diag-head", type: "button", "aria-expanded": "false" },
-      h("span", { class: "diag-date" }, formatDate(report.createdAt)),
+      h("span", { class: "diag-date" }, formatDateTime(report.createdAt)),
       h("span", { class: `diag-outcome ${report.outcome}` }, OUTCOME_LABEL[report.outcome] ?? report.outcome),
-      h("span", { class: "diag-summary muted small" }, `${report.attempts} run${report.attempts === 1 ? "" : "s"} - ${report.summary}`),
+      h("span", { class: "diag-summary muted small" },
+        `v${report.appVersion} - ${report.attempts} run${report.attempts === 1 ? "" : "s"} - ${report.summary}`,
+      ),
     );
     head.addEventListener("click", () => {
       if (open) {
@@ -163,7 +165,7 @@ export function render(root: HTMLElement, ctx: AppContext): () => void {
       head.setAttribute("aria-expanded", String(!!open));
     });
     const copyBtn: HTMLButtonElement = button("Copy", () => copyReport(id, copyBtn), "btn secondary small diag-copy");
-    copyBtn.setAttribute("aria-label", `Copy the report from ${formatDate(report.createdAt)}`);
+    copyBtn.setAttribute("aria-label", `Copy the report from ${formatDateTime(report.createdAt)}`);
     row.appendChild(h("div", { class: "diag-bar" }, head, copyBtn));
     return row;
   }

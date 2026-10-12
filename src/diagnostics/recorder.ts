@@ -178,6 +178,12 @@ export async function recordAttempt(
     summary: summarize({ ...args, measurementCount: r ? Object.keys(r.measurements).length : 0 }),
     sensorLog: downsampleSensors(args.sensorLog),
   };
+  try {
+    const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
+    if (tz) report.timeZone = tz;
+  } catch {
+    /* UTC only */
+  }
 
   rec.queued += toUpload.length;
   inFlightFrames += toUpload.length;

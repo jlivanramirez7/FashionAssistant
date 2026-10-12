@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { strFromU8, unzipSync } from "fflate";
-import { diagReportText, isJpeg, parseAttemptNumber, validateDiagAttempt, validateDiagReport } from "../../server/diagnostics.ts";
+import { diagReportText, isJpeg, localTime, parseAttemptNumber, validateDiagAttempt, validateDiagReport } from "../../server/diagnostics.ts";
 import type { DiagAttempt, DiagReport } from "../../src/types.ts";
 import { sampleDevice, startHarness } from "./helpers.ts";
 import type { Harness } from "./helpers.ts";
@@ -163,5 +163,16 @@ describe("diagnostics helpers", () => {
   it("report text survives a missing trace or no attempts", () => {
     expect(diagReportText(report({ id: "r9" }), [])).toContain("(no processing runs recorded)");
     expect(diagReportText(report(), [attempt(1, { trace: undefined, error: "boom" })])).toContain("Error: boom");
+  });
+});
+
+describe("report times", () => {
+  it("shows the scan time in the phone's time zone, with the app version first", () => {
+    const text = diagReportText(report({ id: "r1", appVersion: "0.4.0 (build x)", timeZone: "America/New_York", createdAt: Date.UTC(2026, 9, 12, 11, 56, 50) }), []);
+    const lines = text.split("\n");
+    expect(lines[1]).toBe("App version: 0.4.0 (build x)");
+    expect(lines[2]).toBe("Scan time: 2026-10-12 07:56:50 America/New_York (2026-10-12T11:56:50.000Z)");
+    expect(localTime(Date.UTC(2026, 0, 1), "Not/AZone")).toContain("UTC");
+    expect(localTime(Date.UTC(2026, 0, 1, 5))).toBe("2026-01-01 05:00:00 UTC");
   });
 });

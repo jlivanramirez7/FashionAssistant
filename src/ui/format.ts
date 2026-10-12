@@ -211,6 +211,17 @@ export function formatDate(ms: number): string {
   return `${MONTHS[d.getMonth()]} ${String(d.getDate()).padStart(2, "0")}, ${d.getFullYear()}`;
 }
 
+/** "Oct 12, 2026, 7:56:50 AM" in the phone's time zone (troubleshooting reports). */
+export function formatDateTime(ms: number): string {
+  const d = new Date(ms);
+  if (Number.isNaN(d.getTime())) return "";
+  const h = d.getHours();
+  const hh = h % 12 === 0 ? 12 : h % 12;
+  const mm = String(d.getMinutes()).padStart(2, "0");
+  const ss = String(d.getSeconds()).padStart(2, "0");
+  return `${formatDate(ms)}, ${hh}:${mm}:${ss} ${h < 12 ? "AM" : "PM"}`;
+}
+
 /** Plain-text list for "Copy all" (section 6 S7). */
 export function copyAllText(scan: Pick<ScanDoc, "measurements" | "bodyType" | "createdAt">, units: Units): string {
   const lines = [`My measurements (${formatDate(scan.createdAt)})`];

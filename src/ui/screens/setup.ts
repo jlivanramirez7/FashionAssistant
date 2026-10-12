@@ -156,7 +156,7 @@ export function render(root: HTMLElement, ctx: AppContext): () => void {
     s.debugCapture = (debugBox as HTMLInputElement | null)?.checked ?? false;
     s.diag = diagBox.checked ? createRecorder() : null;
     resetDiagLog();
-    diagLog(`scan started: height ${heightCm.toFixed(1)}cm, body type ${bodyType}, units ${units}`);
+    diagLog(`scan started ${new Date().toLocaleString()}: height ${heightCm.toFixed(1)}cm, body type ${bodyType}, units ${units}`);
     error.hidden = true;
     start.disabled = true;
     start.textContent = "Starting...";

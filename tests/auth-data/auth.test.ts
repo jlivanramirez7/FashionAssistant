@@ -68,7 +68,7 @@ describe("config", () => {
     expect(c.isAuthConfigured()).toBe(true);
     expect(c.GOOGLE_CLIENT_ID).toBe("abc");
     expect(c.ALLOWED_EMAIL).toBe("a@b.com");
-    expect(c.APP_VERSION).toBe("0.1.0");
+    expect(c.APP_VERSION).toMatch(/^\d+\.\d+\.\d+$/);
   });
 });
 

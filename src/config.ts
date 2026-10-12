@@ -12,7 +12,8 @@ export const GOOGLE_CLIENT_ID: string = env("VITE_GOOGLE_CLIENT_ID");
 /** The only account allowed to use the app, lowercased. Empty => nobody is allowed (fail closed). */
 export const ALLOWED_EMAIL: string = env("VITE_ALLOWED_EMAIL").toLowerCase();
 
-export const APP_VERSION: string = "0.1.0";
+/** package.json "version" (vite define); bump it with every release. */
+export const APP_VERSION: string = typeof __APP_VERSION__ === "string" ? __APP_VERSION__ : "0.0.0-dev";
 
 /** Build time stamp (vite define), e.g. "2026-10-12 12:30 UTC"; "dev" when not defined. */
 export const BUILD_ID: string = typeof __BUILD_ID__ === "string" ? __BUILD_ID__ : "dev";

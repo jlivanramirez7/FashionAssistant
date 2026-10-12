@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { diagLog, MAX_LOG_ENTRIES, resetDiagLog, takeDiagLog } from "../../src/diagnostics/log";
 import { downsampleSensors, newReportId, summarize } from "../../src/diagnostics/recorder";
 import { transition } from "../../src/flow/stateMachine";
+import { formatDate, formatDateTime } from "../../src/ui/format";
 
 describe("troubleshooting recorder helpers", () => {
   it("report ids are valid API ids", () => {
@@ -49,5 +50,15 @@ describe("state machine: troubleshooting screen", () => {
     expect(transition(d, { type: "BACK" })).toEqual({ name: "home" });
     expect(transition(d, { type: "DONE" })).toBe(d);
     expect(transition({ name: "history" }, { type: "OPEN_DIAGNOSTICS" })).toEqual({ name: "history" });
+  });
+});
+
+describe("formatDateTime", () => {
+  it("date, 12-hour time with seconds (local time)", () => {
+    const ms = new Date(2026, 9, 12, 7, 5, 9).getTime();
+    expect(formatDateTime(ms)).toBe(`${formatDate(ms)}, 7:05:09 AM`);
+    expect(formatDateTime(new Date(2026, 9, 12, 0, 0, 0).getTime())).toMatch(/, 12:00:00 AM$/);
+    expect(formatDateTime(new Date(2026, 9, 12, 13, 30, 0).getTime())).toMatch(/, 1:30:00 PM$/);
+    expect(formatDateTime(NaN)).toBe("");
   });
 });

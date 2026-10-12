@@ -212,12 +212,12 @@ describe("[A2 client-data] runtime: config + allowlist + auth error", () => {
     vi.unstubAllEnvs();
     vi.resetModules();
   });
-  it("not configured when VITE_GOOGLE_CLIENT_ID is empty; APP_VERSION 0.1.0", async () => {
+  it("not configured when VITE_GOOGLE_CLIENT_ID is empty; APP_VERSION = package.json version", async () => {
     vi.resetModules();
     vi.stubEnv("VITE_GOOGLE_CLIENT_ID", "");
     const c = await loadModule("src/config", "A2 client-data");
     expect(c.isAuthConfigured()).toBe(false);
-    expect(c.APP_VERSION).toBe("0.1.0");
+    expect(c.APP_VERSION).toBe(JSON.parse(readText("package.json")).version);
     vi.resetModules();
     vi.stubEnv("VITE_GOOGLE_CLIENT_ID", "123-abc.apps.googleusercontent.com");
     const c2 = await loadModule("src/config", "A2 client-data");

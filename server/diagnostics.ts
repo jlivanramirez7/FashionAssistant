@@ -64,6 +64,23 @@ export function isJpeg(buf: Uint8Array): boolean {
 // ---------------------------------------------------------------- text report
 
 const iso = (ms: number | undefined) => (num(ms) ? new Date(ms).toISOString() : "?");
+
+/** "2026-10-12 07:56:50 America/New_York" (falls back to UTC). */
+export function localTime(ms: number | undefined, timeZone?: string): string {
+  if (!num(ms)) return "?";
+  try {
+    const p = Object.fromEntries(
+      new Intl.DateTimeFormat("en-CA", {
+        timeZone: timeZone || "UTC",
+        year: "numeric", month: "2-digit", day: "2-digit",
+        hour: "2-digit", minute: "2-digit", second: "2-digit", hourCycle: "h23",
+      }).formatToParts(new Date(ms)).map((x) => [x.type, x.value]),
+    );
+    return `${p.year}-${p.month}-${p.day} ${p.hour}:${p.minute}:${p.second} ${timeZone || "UTC"}`;
+  } catch {
+    return `${iso(ms)} UTC`;
+  }
+}
 const f1 = (x: number | undefined) => (num(x) ? (Math.round(x * 10) / 10).toString() : "-");
 const f2 = (x: number | undefined) => (num(x) ? x.toFixed(2) : "-");
 const secs = (ms: number) => `+${(ms / 1000).toFixed(1)}s`;
@@ -102,9 +119,9 @@ function frameLine(t: FrameTrace): string {
   return parts.join(" | ");
 }
 
-function attemptLines(a: DiagAttempt): string[] {
+function attemptLines(a: DiagAttempt, timeZone?: string): string[] {
   const out: string[] = [];
-  const head = `Attempt ${a.n} (${iso(a.createdAt)}) -> ${a.outcome.toUpperCase()}`;
+  const head = `Attempt ${a.n} (${localTime(a.createdAt, timeZone)}) -> ${a.outcome.toUpperCase()}`;
   out.push(head, "-".repeat(head.length));
   if (a.error) out.push(`Error: ${a.error}`);
   if (a.retakeViews?.length) {
@@ -161,7 +178,9 @@ export function diagReportText(report: DiagReport, attempts: DiagAttempt[]): str
   const p = report.profile;
   const lines = [
     "FASHION ASSISTANT - TROUBLESHOOTING REPORT",
-    `Report ${report.id ?? "?"} | created ${iso(report.createdAt)} | updated ${iso(report.updatedAt)} | app ${report.appVersion}`,
+    `App version: ${report.appVersion}`,
+    `Scan time: ${localTime(report.createdAt, report.timeZone)} (${iso(report.createdAt)})`,
+    `Report ${report.id ?? "?"} | last updated ${localTime(report.updatedAt, report.timeZone)}`,
     `Outcome: ${report.outcome} after ${report.attempts} processing run(s) - ${report.summary}`,
     `Inputs: height ${f1(report.inputs?.heightCm)}cm, body type ${report.inputs?.bodyType}`,
     `Device: ${p?.deviceModelGuess} (${p?.modelSource}); capture ${p?.captureWidth}x${p?.captureHeight}; ` +
@@ -171,7 +190,7 @@ export function diagReportText(report: DiagReport, attempts: DiagAttempt[]): str
     `Sensor samples: ${report.sensorLog?.length ?? 0}`,
     "",
   ];
-  for (const a of attempts) lines.push(...attemptLines(a), "");
+  for (const a of attempts) lines.push(...attemptLines(a, report.timeZone), "");
   if (!attempts.length) lines.push("(no processing runs recorded)");
   return lines.join("\n");
 }

@@ -405,6 +405,8 @@ export interface DiagReport {
   attempts: number;
   /** One line, e.g. "retake: front blurry". */
   summary: string;
+  /** Phone time zone (IANA), so the report shows local times. */
+  timeZone?: string;
   /** Phone orientation samples over the scan (downsampled). */
   sensorLog?: Orientation[];
 }

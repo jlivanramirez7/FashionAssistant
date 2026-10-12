@@ -40,6 +40,12 @@ export type BodyLevels = Record<LevelName, number | null> & {
 
 /** Pant waist (belt line) = hip landmark + this fraction of the way up to the natural waist. */
 export const PANT_WAIST_FRACTION = 0.4;
+/** The crotch is searched from the hip joint down to this fraction of the height below it. */
+export const CROTCH_SEARCH_FRAC = 0.14;
+/** Fallback crotch: this fraction of the height below the hip-joint landmarks. */
+export const CROTCH_BELOW_HIP_FRAC = 0.06;
+/** A leg gap must be open for at least this long (cm) to count as the crotch. */
+const CROTCH_MIN_GAP_CM = 1;
 /** Thigh level below the crotch, cm. */
 export const THIGH_BELOW_CROTCH_CM = 5;
 /** Half-window (cm) of the parabola fit that refines extrema. */
@@ -218,19 +224,26 @@ export function findLevels(input: LevelInput): BodyLevels {
   const pantWaist =
     hipJoint !== null && naturalWaist !== null ? hipJoint + PANT_WAIST_FRACTION * (naturalWaist - hipJoint) : null;
 
-  // Crotch: top of the gap between the legs (front mask), scanning up from the lower legs.
+  // Crotch: top of the gap between the legs (front mask), scanning DOWN from the
+  // hip joint. (Scanning up from the ankles stops wherever the knees or thighs
+  // touch - real scans put the crotch at knee height.) The gap must stay open
+  // for CROTCH_MIN_GAP_CM; when the thighs touch over the whole search band the
+  // crotch falls back to a body proportion below the hip joint.
   let crotch: number | null = null;
   if (hipJoint !== null) {
-    const start = Math.max(idx(ankle ?? 0.05 * H), idx(0.1 * H));
-    const end = idx(hipJoint);
-    let i = start;
-    while (i <= end && input.legGap[i] !== true) i++;
-    if (i <= end) {
-      while (i + 1 <= end && input.legGap[i + 1] === true) i++;
-      if (i < end) crotch = yOf(i) + step / 2;
+    const top = idx(hipJoint) - 1;
+    const bottom = Math.max(0, idx(hipJoint - CROTCH_SEARCH_FRAC * H));
+    const need = Math.max(1, Math.round(CROTCH_MIN_GAP_CM / step));
+    for (let i = top; i >= bottom; i--) {
+      let open = true;
+      for (let k = 0; k < need; k++) if (input.legGap[i - k] !== true) open = false;
+      if (open) {
+        crotch = yOf(i) + step / 2;
+        break;
+      }
     }
     if (crotch === null) {
-      crotch = hipJoint - 0.06 * H;
+      crotch = hipJoint - CROTCH_BELOW_HIP_FRAC * H;
       fallbacks.push("crotch");
     }
   }

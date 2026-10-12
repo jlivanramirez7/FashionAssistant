@@ -492,7 +492,7 @@ export async function runPipeline(args: {
 
   // 5-9. Measurements.
   progress("measure", 0);
-  const { measurements, rawMeasurements } = computeMeasurements(viewData, inputs, factors, {
+  const { measurements, rawMeasurements, levels, levelSizes } = computeMeasurements(viewData, inputs, factors, {
     hasDistortionK1: fin(profile.distortionK1) && profile.distortionK1 !== 0,
   });
   progress("measure", 1);
@@ -551,6 +551,26 @@ export async function runPipeline(args: {
         Object.entries(pitchByView).map(([v, xs]) => [v, r3(((median(xs ?? []) ?? 0) * 180) / Math.PI)]),
       ),
       measurementCount: Object.keys(measurements).length,
+      ...(levels
+        ? {
+            levels: Object.fromEntries(
+              Object.entries(levels)
+                .filter(([k, v]) => k !== "fallbacks" && typeof v === "number")
+                .map(([k, v]) => [k, r1(v as number)]),
+            ),
+            levelFallbacks: [...levels.fallbacks],
+          }
+        : {}),
+      ...(levelSizes
+        ? {
+            levelSizes: Object.fromEntries(
+              Object.entries(levelSizes).map(([k, s]) => [
+                k,
+                { ...(s!.width !== null ? { width: r1(s!.width) } : {}), ...(s!.depth !== null ? { depth: r1(s!.depth) } : {}) },
+              ]),
+            ),
+          }
+        : {}),
       thresholds: {
         scaleAgreementLimitPct: SCALE_AGREEMENT_LIMIT_PCT,
         focalOverrideFrac: FOCAL_OVERRIDE_FRAC,

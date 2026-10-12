@@ -353,6 +353,12 @@ export interface PipelineTrace {
   /** Floor-vs-typed-height disagreement per view BEFORE the tilt correction (percent). */
   rawAgreementPct?: Partial<Record<ViewName, number>>;
   measurementCount: number;
+  /** Body levels, cm above the floor (median over frame tuples). */
+  levels?: Record<string, number>;
+  /** Levels that came from a body-proportion fallback instead of the outline. */
+  levelFallbacks?: string[];
+  /** Front width / side depth (cm) at the torso levels. */
+  levelSizes?: Record<string, { width?: number; depth?: number }>;
   thresholds: {
     scaleAgreementLimitPct: number;
     focalOverrideFrac: number;

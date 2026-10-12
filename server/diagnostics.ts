@@ -159,6 +159,22 @@ function attemptLines(a: DiagAttempt, timeZone?: string): string[] {
           `(per view: ${per || "-"}; tolerance ${t.thresholds.pitchToleranceDeg ?? "?"} deg); raw floor-vs-height mismatch: ${raw || "-"}`,
       );
     } else out.push("Tilt correction: none (no solution within limits)");
+    if (t.levels) {
+      const fb = new Set(t.levelFallbacks ?? []);
+      out.push(
+        `Levels (cm above floor): ${Object.entries(t.levels)
+          .sort((a, b) => b[1] - a[1])
+          .map(([k, y]) => `${k} ${f1(y)}${fb.has(k) ? "*" : ""}`)
+          .join(", ")}  (* = body-proportion fallback)`,
+      );
+    }
+    if (t.levelSizes) {
+      out.push(
+        `Torso sizes (front width x side depth, cm): ${Object.entries(t.levelSizes)
+          .map(([k, s]) => `${k} ${f1(s.width)} x ${f1(s.depth)}`)
+          .join("; ")}`,
+      );
+    }
     for (const v of t.views) {
       const reasons = Object.entries(v.reasons).map(([k, n]) => `${k} x${n}`).join(", ") || "none";
       out.push(

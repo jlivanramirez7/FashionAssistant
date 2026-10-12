@@ -22,7 +22,13 @@ const BODY_TYPES: { value: BodyType; label: string }[] = [
   { value: "unspecified", label: "Unspecified" },
 ];
 
-const CHECKLIST = ["Fitted clothes", "Hair up, shoes off", "Plain wall, good light", "~3 m (10 ft) of clear floor"];
+const CHECKLIST = [
+  "Fitted shirt, tucked in (a loose shirt adds inches at the waist)",
+  "Feet a little apart so there is a gap between your legs",
+  "Hair up, shoes off",
+  "Plain wall, good light",
+  "~3 m (10 ft) of clear floor",
+];
 
 export function render(root: HTMLElement, ctx: AppContext): () => void {
   let alive = true;

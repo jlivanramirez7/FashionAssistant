@@ -299,7 +299,16 @@ const mean = (xs: (number | null)[]): number | null => {
 
 // ------------------------------------------------------------------ one tuple
 
-type TupleResult = { values: Partial<Record<MeasurementKey, number>>; levels: BodyLevels };
+/** Front width / side depth (cm) at a torso level (troubleshooting reports). */
+export type LevelSize = { width: number | null; depth: number | null };
+const SIZED_LEVELS = ["neck", "chest", "naturalWaist", "pantWaist", "hips"] as const;
+type SizedLevel = (typeof SIZED_LEVELS)[number];
+
+type TupleResult = {
+  values: Partial<Record<MeasurementKey, number>>;
+  levels: BodyLevels;
+  sizes: Partial<Record<SizedLevel, LevelSize>>;
+};
 
 function measureTuple(F: FrameModel, S: FrameModel | null, B: FrameModel | null, H: number): TupleResult {
   const fp = ensureProfile(F, H);
@@ -333,6 +342,12 @@ function measureTuple(F: FrameModel, S: FrameModel | null, B: FrameModel | null,
     const d = S.torsoWidth(y);
     return w && d ? ellipseCircumference(w.width, d.width) : null;
   };
+  const sizes: TupleResult["sizes"] = {};
+  for (const name of SIZED_LEVELS) {
+    const y = L[name];
+    if (y === null) continue;
+    sizes[name] = { width: F.torsoWidth(y)?.width ?? null, depth: S?.torsoWidth(y)?.width ?? null };
+  }
   put("neck", torsoCirc(L.neck));
   put("chest", torsoCirc(L.chest));
   put("bust", out.chest ?? null);
@@ -400,7 +415,7 @@ function measureTuple(F: FrameModel, S: FrameModel | null, B: FrameModel | null,
     }
     put("footLength", mean(feet));
   }
-  return { values: out, levels: L };
+  return { values: out, levels: L, sizes };
 }
 
 // ------------------------------------------------------------------ aggregation
@@ -461,7 +476,12 @@ export function computeMeasurements(
   inputs: ScanInputs,
   factors: CorrectionFactors | null,
   options: ComputeOptions = {},
-): { measurements: Measurements; rawMeasurements: RawMeasurements; levels: BodyLevels | null } {
+): {
+  measurements: Measurements;
+  rawMeasurements: RawMeasurements;
+  levels: BodyLevels | null;
+  levelSizes?: Partial<Record<SizedLevel, LevelSize>>;
+} {
   const H = inputs.heightCm;
   const measurements: Measurements = {};
   const rawMeasurements: RawMeasurements = {};
@@ -494,6 +514,15 @@ export function computeMeasurements(
     tuples.push(measureTuple(F, S, B, H));
   }
   const levels = medianLevels(tuples.map((t) => t.levels));
+  const medOf = (xs: (number | null)[]): number | null => {
+    const v = xs.filter(fin).sort((a, b) => a - b);
+    return v.length ? median(v) : null;
+  };
+  const levelSizes: Partial<Record<SizedLevel, LevelSize>> = {};
+  for (const name of SIZED_LEVELS) {
+    const ss = tuples.map((t) => t.sizes[name]).filter((x): x is LevelSize => !!x);
+    if (ss.length) levelSizes[name] = { width: medOf(ss.map((s) => s.width)), depth: medOf(ss.map((s) => s.depth)) };
+  }
 
   for (const spec of MEASUREMENT_SPECS) {
     const key = spec.key;
@@ -510,5 +539,5 @@ export function computeMeasurements(
     u *= k;
     measurements[key] = { valueCm: st.mean * k, uncertaintyCm: u, confidence: conf };
   }
-  return { measurements, rawMeasurements, levels };
+  return { measurements, rawMeasurements, levels, levelSizes };
 }

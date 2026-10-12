@@ -99,6 +99,28 @@ describe("findLevels", () => {
     expect(L.pantWaist!).toBeCloseTo(91 + 0.4 * (L.naturalWaist! - 91), 9);
     expect(L.fallbacks).toEqual([]);
   });
+  it("crotch: knees touching do not stop the search (real scan: inseam read as 38 cm)", () => {
+    const step = 0.25;
+    const n = 800;
+    const y = (i: number) => i * step;
+    const base = {
+      heightCm: 179, stepCm: step, frontWidth: [], sideDepth: [], legWidth: [], armSeparated: [],
+      landmarks: { shoulderY: 147, mouthY: 160, hipY: 94, kneeY: 50, ankleY: 8 },
+    };
+    // Gap between the ankles, knees touching (44-56 cm), gap again up to the crotch at 82 cm.
+    const kneesTouch = findLevels({ ...base, legGap: Array.from({ length: n }, (_, i) => (y(i) > 10 && y(i) < 44) || (y(i) > 56 && y(i) < 82)) });
+    expect(kneesTouch.crotch!).toBeCloseTo(81.875, 5);
+    expect(kneesTouch.fallbacks).not.toContain("crotch");
+    // Thighs touch all the way down to the knees: body-proportion fallback below the hip joint.
+    const thighsTouch = findLevels({ ...base, legGap: Array.from({ length: n }, (_, i) => y(i) > 10 && y(i) < 46) });
+    expect(thighsTouch.crotch!).toBeCloseTo(94 - 0.06 * 179, 9);
+    expect(thighsTouch.fallbacks).toContain("crotch");
+    // A one-row speck of background is not a crotch.
+    const speck = Array.from({ length: n }, (_, i) => y(i) > 10 && y(i) < 46) as boolean[];
+    speck[Math.round(85 / step)] = true;
+    expect(findLevels({ ...base, legGap: speck }).fallbacks).toContain("crotch");
+  });
+
   it("uses fallbacks (and says so) when outlines are missing", () => {
     const L = findLevels({
       heightCm: 170,

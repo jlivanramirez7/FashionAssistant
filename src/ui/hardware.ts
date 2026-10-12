@@ -5,6 +5,7 @@ import { unlockVoice } from "../capture/voice";
 import { getDeviceRecord } from "../data/devices";
 import { getDeviceId } from "../data/deviceId";
 import { buildDeviceProfile } from "../device/profile";
+import { logCameraDetails } from "../diagnostics/cameraInfo";
 import { diagLog } from "../diagnostics/log";
 import { initVision } from "../vision";
 import { acquireWakeLock, releaseWakeLock } from "../wakeLock";
@@ -57,6 +58,7 @@ export async function startFromTap(ctx: AppContext): Promise<StartResult> {
       `window ${window.innerWidth}x${window.innerHeight}, screen ${screen.orientation?.type ?? "?"}; ` +
       `model ${s.profile.deviceModelGuess} (${s.profile.modelSource}), focal ${s.profile.focalLengthPx.toFixed(0)}px (${s.profile.focalLengthSource})`,
   );
+  void logCameraDetails(track);
   if (!s.visionLive) {
     s.visionLive = initVision({ live: true });
     s.visionLive.catch(() => undefined); // surfaced on the Capture screen

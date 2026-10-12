@@ -101,7 +101,11 @@ function frameLine(t: FrameTrace): string {
     `mask ${t.mask ? `Y ${f2(t.maskCoverage)}` : "N"}`,
   ];
   if (t.maskInfo) {
-    parts.push(`regions ${t.maskInfo.regions - t.maskInfo.regionsDropped}/${t.maskInfo.regions} body-mask ${t.maskInfo.bodyMask ? "Y" : "N"}`);
+    parts.push(
+      `regions ${t.maskInfo.regions - t.maskInfo.regionsDropped}/${t.maskInfo.regions} body-mask ${t.maskInfo.bodyMask ? "Y" : "N"}` +
+        (num(t.maskInfo.bodyMax) ? ` body-max ${f2(t.maskInfo.bodyMax)}` : "") +
+        (num(t.maskInfo.classSum) ? ` class-sum ${f2(t.maskInfo.classSum)}` : ""),
+    );
   }
   if (num(t.shoulderRatio)) parts.push(`shoulder/height ${f2(t.shoulderRatio)}`);
   if (t.quality) {
@@ -139,6 +143,8 @@ function attemptLines(a: DiagAttempt, timeZone?: string): string[] {
         `lens height ${f1(d.lensHeightCm)}cm; tilt ${f1(d.tiltDeg)} roll ${f1(d.rollDeg)}; processing ${Math.round(d.processingMs)}ms`,
     );
   }
+  const delegates = Object.entries(d?.modelVersions ?? {}).filter(([k]) => k.startsWith("delegate."));
+  if (delegates.length) out.push(`Processors: ${delegates.map(([k, v]) => `${k.slice(9)} ${v}`).join(", ")}`);
   const t = a.trace;
   if (t) {
     out.push(

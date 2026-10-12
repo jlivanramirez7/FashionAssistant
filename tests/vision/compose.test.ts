@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
 import {
+  BLANK_BODY_MAX,
+  BLANK_CLASS_SUM,
   BOX_FILL_LIMIT,
+  classSumMean,
+  maxValue,
   borderFill,
   composeMask,
   dilate,
@@ -156,5 +160,26 @@ describe("whole-body gating (crops that fill their box)", () => {
     const m = composeMask([crop], W, H, { body, bodyMarginPx: 2 });
     expect(m.info?.regionsDropped).toBe(0);
     expect(m.data[20 * W + 20]).toBe(1);
+  });
+});
+
+describe("blank model output (GPU read-back failure)", () => {
+  it("classSumMean: softmax masks sum to ~1, blank masks to 0", () => {
+    const n = 100;
+    const bg = new Float32Array(n).fill(0.7);
+    const clothes = new Float32Array(n).fill(0.3);
+    expect(classSumMean([bg, clothes])).toBeCloseTo(1, 6);
+    expect(classSumMean([new Float32Array(n), new Float32Array(n)])).toBe(0);
+    expect(classSumMean([new Float32Array(n), new Float32Array(n)])).toBeLessThan(BLANK_CLASS_SUM);
+    expect(classSumMean([])).toBe(0);
+  });
+  it("blank masks would read as 'person everywhere' - which is why they are caught", () => {
+    const blank = [new Float32Array(16), new Float32Array(16)];
+    expect(maxValue(personProbFromConfidence(blank))).toBe(1);
+  });
+  it("maxValue", () => {
+    expect(maxValue(Float32Array.from([0, 0.02, 0.01]))).toBe(Float32Array.from([0.02])[0]);
+    expect(maxValue(Float32Array.from([0, 0.02]))).toBeLessThan(BLANK_BODY_MAX);
+    expect(maxValue(new Float32Array(0))).toBe(0);
   });
 });

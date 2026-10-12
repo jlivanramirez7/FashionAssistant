@@ -31,6 +31,8 @@ export interface VisionApi {
   frameQuality: typeof import("../vision").frameQuality;
   /** Optional: reported in diagnostics.modelVersions (the default loader fills it). */
   modelVersions?: Record<string, string>;
+  /** Optional: GPU/CPU per model after the run, reported as modelVersions["delegate.<task>"]. */
+  delegates?: () => Record<string, string | undefined>;
 }
 
 /** Solved focal length replaces the spec value when they differ by more than this. */
@@ -47,6 +49,7 @@ async function loadVision(): Promise<VisionApi> {
     segmentPerson: mod.segmentPerson,
     frameQuality: mod.frameQuality,
     modelVersions: (mod as { MODEL_VERSIONS?: Record<string, string> }).MODEL_VERSIONS,
+    delegates: () => ({ ...mod.visionDelegates }),
   };
 }
 
@@ -467,7 +470,14 @@ export async function runPipeline(args: {
       scaleAgreementPct: worstAgreement,
       qualityScores,
       processingMs: Math.max(0, t1 - t0),
-      modelVersions: vision.modelVersions ?? {},
+      modelVersions: {
+        ...(vision.modelVersions ?? {}),
+        ...Object.fromEntries(
+          Object.entries(vision.delegates?.() ?? {})
+            .filter((e): e is [string, string] => typeof e[1] === "string")
+            .map(([k, v]) => [`delegate.${k}`, v]),
+        ),
+      },
     },
   };
   if (useSolved && fSolved !== null) result.solvedFocalLengthPx = fSolved;

@@ -8,7 +8,8 @@
 import type { NormalizedLandmark, PoseLandmarkerResult } from "@mediapipe/tasks-vision";
 import type { Landmark } from "../types";
 import type { CropProb } from "./compose";
-import { ensureHeavy, tasks } from "./runtime";
+import { BLANK_BODY_MAX, maxValue } from "./compose";
+import { ensureHeavy, switchToCpu, tasks } from "./runtime";
 
 /** PURE: first pose of a result as plain Landmarks (x, y normalized). */
 export function toLandmarks(poses: NormalizedLandmark[][] | undefined): Landmark[] | null {
@@ -70,16 +71,24 @@ export function detectPoseLive(video: HTMLVideoElement, timestampMs: number): La
 
 /** Heavy model on one full-resolution frame (loads the model on first use). */
 export async function detectPoseHeavy(image: ImageBitmap | ImageData): Promise<Landmark[] | null> {
-  const lm = await ensureHeavy();
-  const result = lm.detect(image);
-  try {
-    const m = result.segmentationMasks?.[0];
-    if (m && m.width > 0 && m.height > 0) {
-      const d = downsampleProb(m.getAsFloat32Array(), m.width, m.height);
-      bodyMasks.set(image, { x: 0, y: 0, w: image.width, h: image.height, maskWidth: d.w, maskHeight: d.h, prob: d.prob });
+  for (let attempt = 0; ; attempt++) {
+    const lm = await ensureHeavy();
+    const result = lm.detect(image);
+    let blank = false;
+    try {
+      const m = result.segmentationMasks?.[0];
+      if (m && m.width > 0 && m.height > 0) {
+        const d = downsampleProb(m.getAsFloat32Array(), m.width, m.height);
+        const maxProb = maxValue(d.prob);
+        blank = !!result.landmarks?.[0]?.length && maxProb < BLANK_BODY_MAX;
+        bodyMasks.set(image, { x: 0, y: 0, w: image.width, h: image.height, maskWidth: d.w, maskHeight: d.h, prob: d.prob, maxProb });
+      }
+    } catch (err) {
+      console.warn("[vision] body mask unavailable", err);
     }
-  } catch (err) {
-    console.warn("[vision] body mask unavailable", err);
+    const landmarks = read(result);
+    // Person found but an empty body mask: the GPU read the mask back blank.
+    if (blank && attempt === 0 && (await switchToCpu("heavy", "body mask blank"))) continue;
+    return landmarks;
   }
-  return read(result);
 }

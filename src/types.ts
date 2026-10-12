@@ -154,7 +154,7 @@ export interface PersonMask {
   height: number;
   data: Uint8Array;
   /** How the mask was built (troubleshooting reports). */
-  info?: { regions: number; regionsDropped: number; bodyMask: boolean };
+  info?: { regions: number; regionsDropped: number; bodyMask: boolean; bodyMax?: number; classSum?: number };
 }
 
 export interface QualityScore {
@@ -308,7 +308,7 @@ export interface FrameTrace {
   /** Share of the frame covered by the person mask (0..1). */
   maskCoverage?: number;
   /** Region crops used / dropped for filling their box; whole-body mask used. */
-  maskInfo?: { regions: number; regionsDropped: number; bodyMask: boolean };
+  maskInfo?: { regions: number; regionsDropped: number; bodyMask: boolean; bodyMax?: number; classSum?: number };
   /** Shoulder-to-shoulder px / head-to-feet px (about 0.2-0.3 for a real body). */
   shoulderRatio?: number;
   quality?: QualityScore;

@@ -45,8 +45,8 @@ export const tasks: {
 
 const pending: { live?: Promise<PoseLandmarker>; heavy?: Promise<PoseLandmarker>; segmenter?: Promise<ImageSegmenter> } = {};
 
-/** Which delegate each task ended up on (diagnostics). */
-export const delegates: Partial<Record<"live" | "heavy" | "segmenter", Delegate>> = {};
+/** Which delegate each task ended up on, plus why it changed (diagnostics). */
+export const delegates: Partial<Record<"live" | "heavy" | "segmenter", string>> = {};
 
 function mp(): Promise<Mp> {
   if (!mpPromise) mpPromise = import("@mediapipe/tasks-vision");
@@ -66,7 +66,16 @@ function modelPath(file: string): string {
   return `${config.modelBase.replace(/\/$/, "")}/${file}`;
 }
 
-async function withFallback<T>(name: "live" | "heavy" | "segmenter", create: (d: Delegate) => Promise<T>): Promise<T> {
+async function withFallback<T>(
+  name: "live" | "heavy" | "segmenter",
+  create: (d: Delegate) => Promise<T>,
+  only?: Delegate,
+): Promise<T> {
+  if (only) {
+    const t = await create(only);
+    delegates[name] = only;
+    return t;
+  }
   try {
     const t = await create("GPU");
     delegates[name] = "GPU";
@@ -79,7 +88,7 @@ async function withFallback<T>(name: "live" | "heavy" | "segmenter", create: (d:
   }
 }
 
-function createPose(name: "live" | "heavy"): Promise<PoseLandmarker> {
+function createPose(name: "live" | "heavy", only?: Delegate): Promise<PoseLandmarker> {
   return (async () => {
     const [m, fs] = await Promise.all([mp(), fileset()]);
     return withFallback(name, (delegate) =>
@@ -90,11 +99,12 @@ function createPose(name: "live" | "heavy"): Promise<PoseLandmarker> {
         // Heavy: whole-body mask, used to keep the per-region segmentation honest.
         outputSegmentationMasks: name === "heavy",
       }),
+      only,
     );
   })();
 }
 
-function createSegmenter(): Promise<ImageSegmenter> {
+function createSegmenter(only?: Delegate): Promise<ImageSegmenter> {
   return (async () => {
     const [m, fs] = await Promise.all([mp(), fileset()]);
     return withFallback("segmenter", (delegate) =>
@@ -104,6 +114,7 @@ function createSegmenter(): Promise<ImageSegmenter> {
         outputConfidenceMasks: true,
         outputCategoryMask: false,
       }),
+      only,
     );
   })();
 }
@@ -127,6 +138,27 @@ export async function ensureSegmenter(): Promise<ImageSegmenter> {
   pending.segmenter ??= createSegmenter().catch((e) => { pending.segmenter = undefined; throw e; });
   tasks.segmenter = await pending.segmenter;
   return tasks.segmenter;
+}
+
+/**
+ * Some phone GPUs run the models but read masks back as all zeros. When a
+ * caller detects that, the task is rebuilt on the CPU for the rest of the
+ * session. Returns false when it is already on the CPU (nothing to try).
+ */
+export async function switchToCpu(name: "heavy" | "segmenter", reason: string): Promise<boolean> {
+  if ((delegates[name] ?? "").startsWith("CPU")) return false;
+  console.warn(`[vision] ${name}: ${reason}; switching to the CPU`);
+  tasks[name]?.close();
+  tasks[name] = null;
+  if (name === "heavy") {
+    pending.heavy = createPose("heavy", "CPU").catch((e) => { pending.heavy = undefined; throw e; });
+    tasks.heavy = await pending.heavy;
+  } else {
+    pending.segmenter = createSegmenter("CPU").catch((e) => { pending.segmenter = undefined; throw e; });
+    tasks.segmenter = await pending.segmenter;
+  }
+  delegates[name] = `CPU (GPU ${reason})`;
+  return true;
 }
 
 /** Frees every loaded task (TaskRunner.close()). */

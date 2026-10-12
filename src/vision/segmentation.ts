@@ -9,11 +9,19 @@
 
 import type { Landmark, PersonMask } from "../types";
 import { regionCrops, type CropBox } from "./crops";
-import { composeMask, personProbFromCategory, personProbFromConfidence, type CropProb } from "./compose";
+import {
+  BLANK_CLASS_SUM,
+  classSumMean,
+  composeMask,
+  maxValue,
+  personProbFromCategory,
+  personProbFromConfidence,
+  type CropProb,
+} from "./compose";
 import { refineEdges } from "./edgeRefine";
 import { bodyMaskFor } from "./pose";
 import { rgbaToGray } from "./quality";
-import { ensureSegmenter } from "./runtime";
+import { ensureSegmenter, switchToCpu } from "./runtime";
 
 /** Crops are downscaled to this longest side before segmentation (the model runs at 256x256 anyway). */
 const SEGMENT_INPUT_MAX = 512;
@@ -51,7 +59,7 @@ export function imageToImageData(image: ImageBitmap | ImageData): ImageData {
   return ctx.getImageData(0, 0, image.width, image.height);
 }
 
-async function segmentCrop(src: AnyCanvas, box: CropBox): Promise<CropProb | null> {
+async function segmentCrop(src: AnyCanvas, box: CropBox, retry = true): Promise<CropProb | null> {
   const seg = await ensureSegmenter();
   const s = Math.min(1, SEGMENT_INPUT_MAX / Math.max(box.w, box.h));
   const cw = Math.max(1, Math.round(box.w * s));
@@ -63,12 +71,22 @@ async function segmentCrop(src: AnyCanvas, box: CropBox): Promise<CropProb | nul
     const masks = result.confidenceMasks;
     if (masks && masks.length > 0) {
       const arrays = masks.map((m) => m.getAsFloat32Array().slice());
-      out = { ...box, maskWidth: masks[0].width, maskHeight: masks[0].height, prob: personProbFromConfidence(arrays) };
+      const prob = personProbFromConfidence(arrays);
+      out = {
+        ...box, maskWidth: masks[0].width, maskHeight: masks[0].height, prob,
+        maxProb: maxValue(prob), classSum: arrays.length > 1 ? classSumMean(arrays) : undefined,
+      };
     } else if (result.categoryMask) {
       const m = result.categoryMask;
       out = { ...box, maskWidth: m.width, maskHeight: m.height, prob: personProbFromCategory(m.getAsUint8Array()) };
     }
   });
+  // Class confidences must sum to ~1; ~0 means the GPU read them back blank
+  // (then "1 - background" is 1 everywhere and the crop fills its box).
+  const sum = (out as CropProb | null)?.classSum;
+  if (retry && sum !== undefined && sum < BLANK_CLASS_SUM && (await switchToCpu("segmenter", "masks blank"))) {
+    return segmentCrop(src, box, false);
+  }
   return out;
 }
 
@@ -87,7 +105,13 @@ export async function segmentPerson(image: ImageBitmap | ImageData, landmarks: L
     const p = await segmentCrop(canvas, b);
     if (p) probs.push(p);
   }
-  const coarse = composeMask(probs, width, height, { body: bodyMaskFor(image) });
+  const body = bodyMaskFor(image);
+  const coarse = composeMask(probs, width, height, { body });
+  if (coarse.info) {
+    const sums = probs.map((p) => p.classSum).filter((x): x is number => x !== undefined);
+    if (sums.length) coarse.info.classSum = Math.round((sums.reduce((a, b) => a + b, 0) / sums.length) * 1000) / 1000;
+    if (body?.maxProb !== undefined) coarse.info.bodyMax = Math.round(body.maxProb * 1000) / 1000;
+  }
   const rgba = image instanceof ImageData ? image.data : ctx.getImageData(0, 0, width, height).data;
   const gray = rgbaToGray(rgba, width, height);
   const data = refineEdges(coarse.data, gray, width, height, { radius: 3 });

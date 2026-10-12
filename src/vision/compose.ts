@@ -14,7 +14,39 @@ export interface CropProb {
   maskHeight: number;
   /** maskWidth * maskHeight person probabilities, 0..1. */
   prob: Float32Array;
+  /** Health of the raw model output (troubleshooting): highest value / mean class sum. */
+  maxProb?: number;
+  classSum?: number;
 }
+
+/** PURE: highest value (0 for empty). */
+export function maxValue(a: Float32Array): number {
+  let m = 0;
+  for (let i = 0; i < a.length; i++) if (a[i] > m) m = a[i];
+  return m;
+}
+
+/**
+ * PURE: mean over sampled pixels of the summed class confidences. A softmax
+ * model gives ~1 everywhere; ~0 means the masks read back blank (GPU issue).
+ */
+export function classSumMean(masks: Float32Array[], step = 37): number {
+  if (masks.length === 0 || masks[0].length === 0) return 0;
+  let total = 0;
+  let n = 0;
+  for (let i = 0; i < masks[0].length; i += step) {
+    let s = 0;
+    for (const m of masks) s += m[i] ?? 0;
+    total += s;
+    n++;
+  }
+  return n ? total / n : 0;
+}
+
+/** Confidence masks with a mean class sum below this are treated as blank. */
+export const BLANK_CLASS_SUM = 0.5;
+/** A whole-body mask whose highest value is below this (with a person found) is blank. */
+export const BLANK_BODY_MAX = 0.05;
 
 /**
  * Person probability from selfie_multiclass confidence masks

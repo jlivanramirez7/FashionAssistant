@@ -3,6 +3,7 @@ import { signOutUser } from "../../auth/authGuard";
 import { listScans } from "../../data/scans";
 import type { MeasurementKey } from "../../types";
 import { formatLength } from "../../units";
+import { APP_VERSION, BUILD_ID } from "../../config";
 import { errorMessage, type AppContext } from "../context";
 import { button, h, listRow, screen, setChildren } from "../dom";
 import { formatDate, measurementLabel, visibleMeasurements } from "../format";
@@ -37,6 +38,7 @@ export function render(root: HTMLElement, ctx: AppContext): () => void {
       }, undefined, "subtle"),
     ),
   );
+  body.append(h("p", { class: "muted small app-version" }, `Version ${APP_VERSION} · build ${BUILD_ID}`));
   actions.append(button("New scan", () => ctx.dispatch({ type: "NEW_SCAN" }), "btn primary"));
   root.appendChild(el);
 

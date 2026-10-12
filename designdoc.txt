@@ -1392,7 +1392,11 @@ and .env.production):
 
 vite.config.ts (outline):
   - plugins: basicSsl() for HTTPS in dev only (camera needs HTTPS on
-    a phone), VitePWA({ registerType: "autoUpdate", manifest: {...} })
+    a phone), VitePWA({ registerType: "prompt", manifest: {...} });
+    src/main.ts applies a waiting update (reload) only on the boot,
+    sign-in or Home screens, never mid-scan, and checks for updates
+    every 30 minutes. Home and troubleshooting reports show the build
+    stamp (__BUILD_ID__).
   - manifest: name "Fashion Assistant", display "standalone" (iOS
     has no "fullscreen"), orientation "portrait", theme/background
     colours, icons

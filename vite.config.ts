@@ -9,7 +9,9 @@ export default defineConfig(({ command }) => ({
   plugins: [
     ...(command === "serve" ? [basicSsl()] : []),
     VitePWA({
-      registerType: "autoUpdate",
+      // "prompt": a new version waits until src/main.ts applies it on a safe
+      // screen (never mid-scan) instead of only on a later cold start.
+      registerType: "prompt",
       manifest: {
         name: "Fashion Assistant",
         short_name: "Fashion Asst",
@@ -40,6 +42,8 @@ export default defineConfig(({ command }) => ({
       },
     }),
   ],
+  // Build stamp shown on Home and in troubleshooting reports.
+  define: { __BUILD_ID__: JSON.stringify(new Date().toISOString().slice(0, 16).replace("T", " ") + " UTC") },
   server: { host: true, proxy: { "/api": "http://localhost:8080" } },
   build: {
     rollupOptions: { input: "index.html" },

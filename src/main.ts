@@ -88,9 +88,38 @@ async function boot(root: HTMLElement): Promise<void> {
     }
   }
 
+  // App updates (service worker, registerType "prompt"): a new version is
+  // applied (page reload) as soon as we are on a screen where nothing is lost.
+  const UPDATE_SAFE: readonly StateName[] = ["boot", "signin", "home"];
+  let applyUpdate: (() => void) | null = null;
+  const maybeUpdate = (): void => {
+    if (applyUpdate && UPDATE_SAFE.includes(state.name)) applyUpdate();
+  };
+  if (!import.meta.env.DEV && "serviceWorker" in navigator) {
+    void import("virtual:pwa-register")
+      .then(({ registerSW }) => {
+        const updateSW = registerSW({
+          immediate: true,
+          onNeedRefresh() {
+            applyUpdate = () => {
+              applyUpdate = null;
+              void updateSW(true);
+            };
+            maybeUpdate();
+          },
+          onRegisteredSW(_url, reg) {
+            // Long-lived PWA sessions: look for a new version every 30 minutes.
+            if (reg) setInterval(() => void reg.update().catch(() => undefined), 30 * 60_000);
+          },
+        });
+      })
+      .catch((e: unknown) => console.warn("service worker not registered", e));
+  }
+
   function show(next: State): void {
     const prevName = state.name;
     state = next;
+    maybeUpdate();
     cleanup();
     cleanup = () => undefined;
     const wasCapturing = CAPTURE_STATES.includes(prevName);

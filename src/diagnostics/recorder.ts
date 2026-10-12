@@ -2,7 +2,7 @@
 // processing run it JPEG-encodes the frames not uploaded yet (before they
 // are closed for a retake), then uploads the report, the attempt (pipeline
 // trace + feedback log) and the frames in the background.
-import { APP_VERSION } from "../config";
+import { APP_VERSION, BUILD_ID } from "../config";
 import { putDiagAttempt, putDiagFrame, putDiagReport } from "../data/diagnostics";
 import type {
   CapturedFrame,
@@ -169,7 +169,7 @@ export async function recordAttempt(
   const report: DiagReport = {
     createdAt: rec.createdAt,
     updatedAt: Date.now(),
-    appVersion: APP_VERSION,
+    appVersion: `${APP_VERSION} (build ${BUILD_ID})`,
     userAgent: typeof navigator !== "undefined" ? navigator.userAgent : "",
     inputs: args.inputs,
     profile: args.profile,

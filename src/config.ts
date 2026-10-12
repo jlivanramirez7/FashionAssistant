@@ -14,6 +14,9 @@ export const ALLOWED_EMAIL: string = env("VITE_ALLOWED_EMAIL").toLowerCase();
 
 export const APP_VERSION: string = "0.1.0";
 
+/** Build time stamp (vite define), e.g. "2026-10-12 12:30 UTC"; "dev" when not defined. */
+export const BUILD_ID: string = typeof __BUILD_ID__ === "string" ? __BUILD_ID__ : "dev";
+
 /** False until VITE_GOOGLE_CLIENT_ID is set; the UI then shows a setup message. */
 export function isAuthConfigured(): boolean {
   return GOOGLE_CLIENT_ID !== "";

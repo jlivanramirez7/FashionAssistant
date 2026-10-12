@@ -155,8 +155,13 @@ describe("vite.config.ts (v2)", () => {
     expect(v).toMatch(/input\s*:\s*["']index\.html["']/);
     expect(v).not.toMatch(/replay/);
   });
-  it("PWA manifest: autoUpdate, standalone, portrait, maskable icon", () => {
-    expect(v).toMatch(/registerType\s*:\s*["']autoUpdate["']/);
+  it("PWA manifest: updates applied on a safe screen, standalone, portrait, maskable icon", () => {
+    // "prompt" + src/main.ts registerSW: a new version reloads the page only on
+    // boot / sign-in / Home, never in the middle of a scan (2026-10-12).
+    expect(v).toMatch(/registerType\s*:\s*["']prompt["']/);
+    const main = readText("src/main.ts");
+    expect(main).toMatch(/virtual:pwa-register/);
+    expect(main).toMatch(/UPDATE_SAFE[^\n]*\["boot", "signin", "home"\]/);
     expect(v).toMatch(/display\s*:\s*["']standalone["']/);
     expect(v).toMatch(/orientation\s*:\s*["']portrait["']/);
     expect(v).toMatch(/icon-512-maskable\.png[^}]*purpose\s*:\s*["']maskable["']/);

@@ -1427,3 +1427,9 @@ video.preview {
 video.preview.landscape-feed {
   object-fit: contain;
 }
+
+.app-version {
+  text-align: center;
+  margin-top: 18px;
+  opacity: 0.7;
+}

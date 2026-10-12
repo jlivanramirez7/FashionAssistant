@@ -8,6 +8,7 @@ import { CAPTURE_STATES, INITIAL_STATE, transition, type Event, type State, type
 import type { Units, UserDoc } from "./types";
 import { closeFrames, createVideoElement, errorMessage, newSession, type AppContext } from "./ui/context";
 import { h } from "./ui/dom";
+import { isStaleChunkError, reloadForNewVersion } from "./ui/staleChunk";
 
 export const SIGN_IN_FAILED_MESSAGE = "Sign-in did not work. Please try again.";
 
@@ -140,7 +141,12 @@ async function boot(root: HTMLElement): Promise<void> {
         cleanup = mod.render(root, ctx);
       })
       .catch((e: unknown) => {
-        if (seq === renderSeq) renderBoot(root, `Could not load this screen: ${errorMessage(e)}. Check your connection and reload.`);
+        if (seq !== renderSeq) return;
+        if (isStaleChunkError(e) && navigator.onLine !== false && reloadForNewVersion()) {
+          renderBoot(root, "Updating to the latest version...");
+          return;
+        }
+        renderBoot(root, `Could not load this screen: ${errorMessage(e)}. Check your connection and reload.`);
       });
   }
 
@@ -191,10 +197,15 @@ async function boot(root: HTMLElement): Promise<void> {
 
 const root = document.getElementById("app");
 if (root) {
+  // Any lazily loaded file missing after a deploy (Vite preload helper): reload once.
+  window.addEventListener("vite:preloadError", (ev) => {
+    if (navigator.onLine !== false && reloadForNewVersion()) ev.preventDefault();
+  });
   if (!isAuthConfigured()) renderNotConfigured(root);
   else
     boot(root).catch((e: unknown) => {
       console.error(e);
+      if (isStaleChunkError(e) && navigator.onLine !== false && reloadForNewVersion()) return;
       renderBoot(root, `Something went wrong while starting: ${errorMessage(e)}`);
     });
 }

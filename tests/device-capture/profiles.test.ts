@@ -92,6 +92,8 @@ describe("public/device-profiles.json", () => {
   });
   it("matches real devices", () => {
     expect(matchSpec(list, { ...base, uaModel: "Pixel 8" }).spec.model).toBe("Pixel 8");
+    const p11 = matchSpec(list, { ...base, uaModel: "Pixel 11 Pro" });
+    expect(p11).toMatchObject({ source: "ua-client-hints", spec: { model: "Pixel 11 Pro", phoneHeightMm: 152.7 } });
     expect(matchSpec(list, { ...base, uaModel: "SM-S928B" }).spec.model).toBe("Galaxy S24 Ultra");
     expect(matchSpec(list, { isIOS: true, screenWidth: 390, screenHeight: 844, dpr: 3 }).source).toBe("screen-match");
   });

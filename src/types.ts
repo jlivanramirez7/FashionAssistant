@@ -284,6 +284,8 @@ export interface PipelineResult {
   retakeViews: { view: ViewName; reason: RetakeReason }[];
   /** New focal length if the height solve overrode the spec (> 5% off). */
   solvedFocalLengthPx?: number;
+  /** Zoom (f_y, px at the profile size) this scan implies with the tilt sensor as measured; averaged over scans. */
+  focalSamplePx?: number;
   /** Per-frame / per-view trace (only when runPipeline is called with trace: true). */
   trace?: PipelineTrace;
 }

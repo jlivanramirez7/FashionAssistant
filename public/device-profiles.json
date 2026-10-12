@@ -27,6 +27,7 @@
   {"model":"Pixel 10","uaModels":["Pixel 10"],"phoneHeightMm":152.8,"frontLensFromTopMm":7,"front35mmEqMm":19.8,"frontSensorAspect":"4:3"},
   {"model":"Pixel 10 Pro","uaModels":["Pixel 10 Pro"],"phoneHeightMm":152.8,"frontLensFromTopMm":7,"front35mmEqMm":17.2,"frontSensorAspect":"4:3"},
   {"model":"Pixel 10 Pro XL","uaModels":["Pixel 10 Pro XL"],"phoneHeightMm":162.8,"frontLensFromTopMm":7,"front35mmEqMm":17.2,"frontSensorAspect":"4:3"},
+  {"model":"Pixel 11 Pro","uaModels":["Pixel 11 Pro"],"phoneHeightMm":152.7,"frontLensFromTopMm":7,"front35mmEqMm":26,"frontSensorAspect":"4:3"},
   {"model":"Galaxy S21","uaModels":["SM-G991*"],"phoneHeightMm":151.7,"frontLensFromTopMm":7,"front35mmEqMm":26,"frontSensorAspect":"4:3"},
   {"model":"Galaxy S21+","uaModels":["SM-G996*"],"phoneHeightMm":161.5,"frontLensFromTopMm":7,"front35mmEqMm":26,"frontSensorAspect":"4:3"},
   {"model":"Galaxy S21 Ultra","uaModels":["SM-G998*"],"phoneHeightMm":165.1,"frontLensFromTopMm":7,"front35mmEqMm":26,"frontSensorAspect":"4:3"},

@@ -212,6 +212,7 @@ export function diagReportText(report: DiagReport, attempts: DiagAttempt[]): str
     `Scan time: ${localTime(report.createdAt, report.timeZone)} (${iso(report.createdAt)})`,
     `Report ${report.id ?? "?"} | last updated ${localTime(report.updatedAt, report.timeZone)}`,
     `Outcome: ${report.outcome} after ${report.attempts} processing run(s) - ${report.summary}`,
+    `Calibration: zoom learned from ${p?.calibrationScans ?? 0} earlier scan(s) (${p?.focalLengthSource})`,
     `Inputs: height ${f1(report.inputs?.heightCm)}cm, body type ${report.inputs?.bodyType}`,
     `Device: ${p?.deviceModelGuess} (${p?.modelSource}); capture ${p?.captureWidth}x${p?.captureHeight}; ` +
       `focal ${f1(p?.focalLengthPx)}px (${p?.focalLengthSource}); lens offset ${f1(p?.lensOffsetCm)}cm (${p?.lensOffsetSource}); ` +

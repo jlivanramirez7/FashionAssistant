@@ -152,7 +152,7 @@ export function render(root: HTMLElement, ctx: AppContext): () => void {
     s.scanId = id;
     await record(captures, "results", { result, unresolved: plan.unresolved, scanId: id });
 
-    s.profile = updatedProfile(s.profile, result.solvedFocalLengthPx);
+    s.profile = updatedProfile(s.profile, result.solvedFocalLengthPx, result.focalSamplePx);
     void saveDeviceRecord(uid, s.profile).catch((e: unknown) => console.warn("Device record not saved", e));
 
     if (alive) {

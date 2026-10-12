@@ -168,4 +168,16 @@ describe("updatedProfile", () => {
   it("does not downgrade a paper calibration's source", () => {
     expect(updatedProfile({ ...profile, focalLengthSource: "paper" }, 1600).focalLengthSource).toBe("paper");
   });
+  it("averages per-scan zoom samples (the spec counts as one sample)", () => {
+    const p1 = updatedProfile(profile, undefined, 1600);
+    expect(p1).toMatchObject({ focalLengthPx: 1550, focalLengthSource: "height-solve", calibrationScans: 1 });
+    const p2 = updatedProfile(p1, undefined, 1400);
+    expect(p2.focalLengthPx).toBeCloseTo((1550 * 2 + 1400) / 3, 9);
+    expect(p2.calibrationScans).toBe(2);
+  });
+  it("ignores wild samples and never overrides paper calibration", () => {
+    expect(updatedProfile(profile, undefined, 3000)).toBe(profile);
+    const paper = { ...profile, focalLengthSource: "paper" as const };
+    expect(updatedProfile(paper, undefined, 1600)).toBe(paper);
+  });
 });

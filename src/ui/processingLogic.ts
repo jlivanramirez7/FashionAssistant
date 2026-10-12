@@ -96,9 +96,33 @@ export function buildScanDoc(args: {
   };
 }
 
-/** PURE: device record to save after a scan (height-solve refines f_y). */
-export function updatedProfile(profile: DeviceProfile, solvedFocalLengthPx: number | undefined): DeviceProfile {
-  if (solvedFocalLengthPx === undefined || !Number.isFinite(solvedFocalLengthPx) || solvedFocalLengthPx <= 0) return profile;
+/** A scan's zoom sample further than this from the current value is ignored (bad scan). */
+export const FOCAL_SAMPLE_MAX_DEV = 0.3;
+
+/**
+ * PURE: device record to save after a scan. A height-solve override (the
+ * floor could not be explained by tilt) replaces f_y; otherwise a scan's
+ * zoom sample joins a running average in which the starting value (spec or
+ * earlier average) counts as calibrationScans + 1 samples. Paper calibration
+ * is never overwritten by samples.
+ */
+export function updatedProfile(
+  profile: DeviceProfile,
+  solvedFocalLengthPx: number | undefined,
+  focalSamplePx?: number,
+): DeviceProfile {
+  const ok = (x: number | undefined): x is number => x !== undefined && Number.isFinite(x) && x > 0;
+  if (!ok(solvedFocalLengthPx)) {
+    if (!ok(focalSamplePx) || profile.focalLengthSource === "paper" || !(profile.focalLengthPx > 0)) return profile;
+    if (Math.abs(focalSamplePx / profile.focalLengthPx - 1) > FOCAL_SAMPLE_MAX_DEV) return profile;
+    const w = Math.max(0, profile.calibrationScans) + 1;
+    return {
+      ...profile,
+      focalLengthPx: (profile.focalLengthPx * w + focalSamplePx) / (w + 1),
+      focalLengthSource: "height-solve",
+      calibrationScans: profile.calibrationScans + 1,
+    };
+  }
   return {
     ...profile,
     focalLengthPx: solvedFocalLengthPx,

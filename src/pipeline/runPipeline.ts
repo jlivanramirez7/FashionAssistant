@@ -411,7 +411,9 @@ export async function runPipeline(args: {
   const solvedProfileF: number[] = [];
   for (const w of work) {
     if (!w.feet || !w.head) continue;
-    const f = solveFocalLength(w.camera, feetRowFor(w.camera, w.view, w.feet, H), w.head.v, H, w.view, { uFeet: w.feet.u, uHead: w.head.u });
+    // On the sensor tilt as measured (undo the tilt fix): the zoom this scan alone implies.
+    const cam0 = pitchApplied ? withPitchOffset(w.camera, -pitchCorr!) : w.camera;
+    const f = solveFocalLength(cam0, feetRowFor(cam0, w.view, w.feet, H), w.head.v, H, w.view, { uFeet: w.feet.u, uHead: w.head.u });
     if (f !== null) {
       const scale = focalForFrame(profile, w.frame.width, w.frame.height) / profile.focalLengthPx;
       if (scale > 0) {
@@ -532,6 +534,9 @@ export async function runPipeline(args: {
     },
   };
   if (useSolved && fSolved !== null) result.solvedFocalLengthPx = fSolved;
+  // Tilt-sensor errors differ per placement, so the zoom each good scan implies
+  // averages out over scans (processingLogic.updatedProfile keeps the average).
+  if (pitchApplied && fSolved !== null && retakeViews.length === 0) result.focalSamplePx = fSolved;
   if (args.trace) {
     const perView = new Map<ViewName, number>();
     result.trace = {

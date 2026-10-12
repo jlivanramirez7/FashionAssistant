@@ -84,6 +84,24 @@ export async function copyText(text: string): Promise<void> {
   ta.remove();
 }
 
+/**
+ * Copy text that is still loading, in ONE tap: ClipboardItem with a promise
+ * keeps the tap's permission while the text arrives (Safari needs this);
+ * otherwise wait for the text and copy it.
+ */
+export async function copyTextFrom(text: Promise<string>): Promise<void> {
+  if (typeof ClipboardItem !== "undefined" && navigator.clipboard?.write) {
+    try {
+      const blob = text.then((t) => new Blob([t], { type: "text/plain" }));
+      await navigator.clipboard.write([new ClipboardItem({ "text/plain": blob })]);
+      return;
+    } catch {
+      /* older ClipboardItem without promise support: fall through */
+    }
+  }
+  await copyText(await text);
+}
+
 /** Tappable list row: label, optional detail, chevron. */
 export function listRow(label: string, onClick: () => void, detail?: string, cls = ""): HTMLButtonElement {
   const b = h("button", { class: `list-row ${cls}`.trim(), type: "button" },

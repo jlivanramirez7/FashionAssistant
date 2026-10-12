@@ -5,6 +5,7 @@ import { unlockVoice } from "../capture/voice";
 import { getDeviceRecord } from "../data/devices";
 import { getDeviceId } from "../data/deviceId";
 import { buildDeviceProfile } from "../device/profile";
+import { diagLog } from "../diagnostics/log";
 import { initVision } from "../vision";
 import { acquireWakeLock, releaseWakeLock } from "../wakeLock";
 import type { AppContext } from "./context";
@@ -46,6 +47,16 @@ export async function startFromTap(ctx: AppContext): Promise<StartResult> {
   if (!s.profile || s.profile.captureWidth !== cap.width || s.profile.captureHeight !== cap.height) {
     s.profile = await buildDeviceProfile(getDeviceId(), { width: cap.width, height: cap.height }, s.savedDevice);
   }
+  // A landscape feed on a portrait screen is letterboxed (object-fit: contain)
+  // so the preview shows the whole frame that is measured, not a zoomed crop.
+  s.video.classList.toggle("landscape-feed", cap.width > cap.height);
+  const track = s.stream?.getVideoTracks()[0];
+  const set = track?.getSettings?.() ?? {};
+  diagLog(
+    `camera: frames ${cap.width}x${cap.height}, track ${set.width ?? "?"}x${set.height ?? "?"} @${set.frameRate ?? "?"}fps, ` +
+      `window ${window.innerWidth}x${window.innerHeight}, screen ${screen.orientation?.type ?? "?"}; ` +
+      `model ${s.profile.deviceModelGuess} (${s.profile.modelSource}), focal ${s.profile.focalLengthPx.toFixed(0)}px (${s.profile.focalLengthSource})`,
+  );
   if (!s.visionLive) {
     s.visionLive = initVision({ live: true });
     s.visionLive.catch(() => undefined); // surfaced on the Capture screen

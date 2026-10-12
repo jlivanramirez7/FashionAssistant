@@ -1422,3 +1422,8 @@ video.preview {
 .diag-copy {
   flex: none;
 }
+
+/* Landscape camera feed on a portrait screen: show the whole measured frame. */
+video.preview.landscape-feed {
+  object-fit: contain;
+}

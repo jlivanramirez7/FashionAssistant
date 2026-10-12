@@ -22,7 +22,7 @@ import {
   tapeForField,
   visibleMeasurements,
 } from "../../src/ui/format";
-import { coverMap, toCanvas } from "../../src/ui/parts/poseGuide";
+import { containMap, coverMap, toCanvas } from "../../src/ui/parts/poseGuide";
 
 const mv = (valueCm: number, confidence = 0.9, uncertaintyCm = 1) => ({ valueCm, confidence, uncertaintyCm });
 
@@ -203,6 +203,11 @@ describe("pose guide mapping", () => {
     expect(m.scale).toBeCloseTo(0.5);
     expect(toCanvas(m, 0, 0)).toEqual([540, 0]);
     expect(toCanvas(m, 1, 1)).toEqual([0, 960]);
+    const box = containMap(1920, 1080, 540, 960); // landscape feed letterboxed in portrait
+    expect(box.scale).toBeCloseTo(540 / 1920, 9);
+    expect(box.offsetX).toBeCloseTo(0, 9);
+    expect(toCanvas(box, 0.5, 0.5)).toEqual([270, 480]);
+    expect(toCanvas(box, 0, 0)[1]).toBeCloseTo(480 - (1080 * 540) / 1920 / 2, 9);
     const wide = coverMap(1080, 1920, 1000, 1000); // crops top/bottom
     expect(wide.offsetY).toBeLessThan(0);
     expect(toCanvas(wide, 0.5, 0.5)).toEqual([500, 500]);

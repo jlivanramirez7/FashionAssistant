@@ -65,6 +65,14 @@ describe("lensOffsetCmFromSpec", () => {
 });
 
 describe("buildProfile", () => {
+  it("landscape frames (portrait phone): the long side spans the sensor short side", () => {
+    const portrait = buildProfile(args).focalLengthPx;
+    const land = buildProfile({ ...args, captureWidth: 1920, captureHeight: 1080 }).focalLengthPx;
+    expect(land).toBeCloseTo(portrait / 0.75, 6);
+    const land169 = buildProfile({ ...args, spec: { ...spec, frontSensorAspect: "16:9" }, captureWidth: 1920, captureHeight: 1080 });
+    expect(land169.focalLengthPx).toBeCloseTo(focalPxFromSpec(24, 1920, 1080, "16:9") * (16 / 9), 6);
+  });
+
   it("uses spec values without a saved record", () => {
     const p = buildProfile(args);
     expect(p).toMatchObject({

@@ -252,6 +252,12 @@ function frameTrace(w: FrameWork, index: number, landmarksNorm: Landmark[] | nul
     t.landmarks = landmarksNorm.map((l) => ({ x: r3(l.x), y: r3(l.y), v: r3(l.visibility ?? 0) }));
   }
   if (w.mask) t.maskCoverage = r3(maskCoverage(w.mask));
+  if (w.mask?.info) t.maskInfo = { ...w.mask.info };
+  const ls = px(w.landmarksPx, LM.leftShoulder);
+  const rs = px(w.landmarksPx, LM.rightShoulder);
+  if (ls && rs && w.feet && w.head && w.feet.v - w.head.v > 0) {
+    t.shoulderRatio = r3(Math.hypot(ls.u - rs.u, ls.v - rs.v) / (w.feet.v - w.head.v));
+  }
   if (w.quality) {
     t.quality = { ...w.quality, sharpness: r3(w.quality.sharpness), score: r3(w.quality.score) };
   }

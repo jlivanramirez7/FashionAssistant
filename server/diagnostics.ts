@@ -83,6 +83,10 @@ function frameLine(t: FrameTrace): string {
     `pose ${t.pose ? "Y" : "N"}`,
     `mask ${t.mask ? `Y ${f2(t.maskCoverage)}` : "N"}`,
   ];
+  if (t.maskInfo) {
+    parts.push(`regions ${t.maskInfo.regions - t.maskInfo.regionsDropped}/${t.maskInfo.regions} body-mask ${t.maskInfo.bodyMask ? "Y" : "N"}`);
+  }
+  if (num(t.shoulderRatio)) parts.push(`shoulder/height ${f2(t.shoulderRatio)}`);
   if (t.quality) {
     parts.push(`sharp ${f2(t.quality.sharpness)} inFrame ${t.quality.inFrame ? "Y" : "N"}${t.quality.reason ? ` [${t.quality.reason}]` : ""}`);
   }

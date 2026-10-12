@@ -87,6 +87,8 @@ function createPose(name: "live" | "heavy"): Promise<PoseLandmarker> {
         baseOptions: { modelAssetPath: modelPath(name === "live" ? MODEL_FILES.poseLite : MODEL_FILES.poseHeavy), delegate },
         runningMode: name === "live" ? "VIDEO" : "IMAGE",
         numPoses: 1,
+        // Heavy: whole-body mask, used to keep the per-region segmentation honest.
+        outputSegmentationMasks: name === "heavy",
       }),
     );
   })();

@@ -72,6 +72,10 @@ export function buildProfile(args: {
   }
 
   let focalLengthPx = focalPxFromSpec(spec.front35mmEqMm, captureWidth, captureHeight, spec.frontSensorAspect ?? "4:3");
+  // The app runs in portrait; a LANDSCAPE frame (some Android Chrome builds)
+  // is a 16:9 window across the portrait field, so its long side spans the
+  // sensor's SHORT side and the focal length in px is larger by long/short.
+  if (captureWidth > captureHeight) focalLengthPx /= parseAspectRatio(spec.frontSensorAspect ?? "4:3");
   let focalLengthSource: DeviceProfile["focalLengthSource"] = "spec";
   if (
     (saved?.focalLengthSource === "height-solve" || saved?.focalLengthSource === "paper") &&

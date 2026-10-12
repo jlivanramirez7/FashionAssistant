@@ -153,6 +153,8 @@ export interface PersonMask {
   width: number;
   height: number;
   data: Uint8Array;
+  /** How the mask was built (troubleshooting reports). */
+  info?: { regions: number; regionsDropped: number; bodyMask: boolean };
 }
 
 export interface QualityScore {
@@ -305,6 +307,10 @@ export interface FrameTrace {
   mask: boolean;
   /** Share of the frame covered by the person mask (0..1). */
   maskCoverage?: number;
+  /** Region crops used / dropped for filling their box; whole-body mask used. */
+  maskInfo?: { regions: number; regionsDropped: number; bodyMask: boolean };
+  /** Shoulder-to-shoulder px / head-to-feet px (about 0.2-0.3 for a real body). */
+  shoulderRatio?: number;
   quality?: QualityScore;
   /** Pixel points used for scale: floor contact under the feet, top of the head. */
   feet?: { u: number; v: number };

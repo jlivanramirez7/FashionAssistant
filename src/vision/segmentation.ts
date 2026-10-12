@@ -11,6 +11,7 @@ import type { Landmark, PersonMask } from "../types";
 import { regionCrops, type CropBox } from "./crops";
 import { composeMask, personProbFromCategory, personProbFromConfidence, type CropProb } from "./compose";
 import { refineEdges } from "./edgeRefine";
+import { bodyMaskFor } from "./pose";
 import { rgbaToGray } from "./quality";
 import { ensureSegmenter } from "./runtime";
 
@@ -73,8 +74,9 @@ async function segmentCrop(src: AnyCanvas, box: CropBox): Promise<CropProb | nul
 
 /**
  * Per-region padded crops at full resolution -> selfie_multiclass per crop
- * (person = every class except background) -> composed full-frame mask ->
- * edge refinement within +/-3 px.
+ * (person = every class except background) -> composed full-frame mask,
+ * limited to the heavy pose model's whole-body mask when it has one (crops
+ * that filled their whole box are dropped) -> edge refinement within +/-3 px.
  */
 export async function segmentPerson(image: ImageBitmap | ImageData, landmarks: Landmark[]): Promise<PersonMask> {
   const width = image.width, height = image.height;
@@ -85,8 +87,9 @@ export async function segmentPerson(image: ImageBitmap | ImageData, landmarks: L
     const p = await segmentCrop(canvas, b);
     if (p) probs.push(p);
   }
-  const coarse = composeMask(probs, width, height);
+  const coarse = composeMask(probs, width, height, { body: bodyMaskFor(image) });
   const rgba = image instanceof ImageData ? image.data : ctx.getImageData(0, 0, width, height).data;
   const gray = rgbaToGray(rgba, width, height);
-  return { width, height, data: refineEdges(coarse.data, gray, width, height, { radius: 3 }) };
+  const data = refineEdges(coarse.data, gray, width, height, { radius: 3 });
+  return coarse.info ? { width, height, data, info: coarse.info } : { width, height, data };
 }

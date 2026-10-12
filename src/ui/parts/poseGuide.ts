@@ -18,6 +18,12 @@ export function coverMap(vw: number, vh: number, cw: number, ch: number): CoverM
   return { scale, offsetX: (cw - vw * scale) / 2, offsetY: (ch - vh * scale) / 2, videoWidth: vw, videoHeight: vh };
 }
 
+/** PURE: object-fit: contain mapping (whole video visible, letterboxed). */
+export function containMap(vw: number, vh: number, cw: number, ch: number): CoverMap {
+  const scale = vw > 0 && vh > 0 ? Math.min(cw / vw, ch / vh) : 1;
+  return { scale, offsetX: (cw - vw * scale) / 2, offsetY: (ch - vh * scale) / 2, videoWidth: vw, videoHeight: vh };
+}
+
 /** PURE: normalized (unmirrored) landmark -> canvas pixel on the mirrored preview. */
 export function toCanvas(m: CoverMap, x: number, y: number): [number, number] {
   return [m.offsetX + (1 - x) * m.videoWidth * m.scale, m.offsetY + y * m.videoHeight * m.scale];
@@ -84,20 +90,24 @@ export function createPoseGuide(video: HTMLVideoElement): PoseGuide {
     return canvas.getContext("2d");
   }
 
-  function drawGhost(g: CanvasRenderingContext2D, w: number, hgt: number): void {
+  /** Ghost inside the visible video rect; the figure keeps portrait proportions (width = min(rect w, rect h / 2)). */
+  function drawGhost(g: CanvasRenderingContext2D, rx: number, ry: number, rw: number, rh: number): void {
     const figure = view === "side" ? SIDE_POSE : A_POSE;
+    const gw = Math.min(rw, rh / 2);
+    const X = (x: number) => rx + rw / 2 + (x - 0.5) * gw;
+    const Y = (y: number) => ry + y * rh;
     g.save();
     g.strokeStyle = "rgba(255,255,255,0.35)";
-    g.lineWidth = Math.max(6, w * 0.035);
+    g.lineWidth = Math.max(6, gw * 0.035);
     g.lineCap = "round";
     g.lineJoin = "round";
     for (const line of figure) {
       g.beginPath();
-      line.forEach(([x, y], i) => (i === 0 ? g.moveTo(x * w, y * hgt) : g.lineTo(x * w, y * hgt)));
+      line.forEach(([x, y], i) => (i === 0 ? g.moveTo(X(x), Y(y)) : g.lineTo(X(x), Y(y))));
       g.stroke();
     }
     g.beginPath();
-    g.arc(HEAD.cx * w, HEAD.cy * hgt, HEAD.r * hgt, 0, Math.PI * 2);
+    g.arc(X(HEAD.cx), Y(HEAD.cy), HEAD.r * rh, 0, Math.PI * 2);
     g.stroke();
     g.restore();
   }
@@ -108,9 +118,11 @@ export function createPoseGuide(video: HTMLVideoElement): PoseGuide {
     const w = canvas.width;
     const hgt = canvas.height;
     g.clearRect(0, 0, w, hgt);
-    drawGhost(g, w, hgt);
+    const contain = video.classList.contains("landscape-feed") && video.videoWidth > 0;
+    const m = (contain ? containMap : coverMap)(video.videoWidth, video.videoHeight, w, hgt);
+    if (contain) drawGhost(g, m.offsetX, m.offsetY, video.videoWidth * m.scale, video.videoHeight * m.scale);
+    else drawGhost(g, 0, 0, w, hgt);
     if (!landmarks || !video.videoWidth) return;
-    const m = coverMap(video.videoWidth, video.videoHeight, w, hgt);
     g.save();
     g.strokeStyle = color;
     g.fillStyle = color;

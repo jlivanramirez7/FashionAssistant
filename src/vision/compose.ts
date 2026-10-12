@@ -143,20 +143,105 @@ export function fillSmallHoles(mask: PersonMask, maxArea: number): PersonMask {
   return { width, height, data };
 }
 
+/**
+ * A region crop whose mask is "person" along more than this share of its
+ * border has filled the whole box (the selfie model gave up on a tight body
+ * crop and called the wall "person" too); such crops are dropped.
+ */
+export const BOX_FILL_LIMIT = 0.8;
+
+/** PURE: share (0..1) of a crop mask's border pixels at or above threshold. */
+export function borderFill(c: CropProb, threshold = 0.5): number {
+  const { maskWidth: w, maskHeight: h, prob } = c;
+  if (w <= 0 || h <= 0) return 0;
+  let n = 0;
+  let on = 0;
+  const visit = (x: number, y: number) => {
+    n++;
+    if (prob[y * w + x] >= threshold) on++;
+  };
+  for (let x = 0; x < w; x++) {
+    visit(x, 0);
+    if (h > 1) visit(x, h - 1);
+  }
+  for (let y = 1; y < h - 1; y++) {
+    visit(0, y);
+    if (w > 1) visit(w - 1, y);
+  }
+  return n ? on / n : 0;
+}
+
+/** PURE: square binary dilation by r px (prefix sums, O(width * height)). */
+export function dilate(mask: Uint8Array, width: number, height: number, r: number): Uint8Array {
+  const W = width + 1;
+  const sum = new Uint32Array(W * (height + 1));
+  for (let y = 0; y < height; y++) {
+    let row = 0;
+    for (let x = 0; x < width; x++) {
+      row += mask[y * width + x] ? 1 : 0;
+      sum[(y + 1) * W + x + 1] = sum[y * W + x + 1] + row;
+    }
+  }
+  const out = new Uint8Array(width * height);
+  for (let y = 0; y < height; y++) {
+    const y0 = Math.max(0, y - r), y1 = Math.min(height, y + r + 1);
+    for (let x = 0; x < width; x++) {
+      const x0 = Math.max(0, x - r), x1 = Math.min(width, x + r + 1);
+      const s = sum[y1 * W + x1] - sum[y0 * W + x1] - sum[y1 * W + x0] + sum[y0 * W + x0];
+      if (s > 0) out[y * width + x] = 1;
+    }
+  }
+  return out;
+}
+
+/**
+ * PURE: region detail limited to the whole-body mask. Inside the body mask
+ * dilated by r px the sharper region probability may win; outside it only
+ * the body probability counts, so a region crop can never paint its box.
+ */
+export function gateProbability(
+  region: Float32Array,
+  body: Float32Array,
+  width: number,
+  height: number,
+  r: number,
+  threshold = 0.5,
+): Float32Array {
+  const bin = new Uint8Array(width * height);
+  for (let i = 0; i < bin.length; i++) bin[i] = body[i] >= threshold ? 1 : 0;
+  const gate = dilate(bin, width, height, r);
+  const out = new Float32Array(width * height);
+  for (let i = 0; i < out.length; i++) out[i] = gate[i] ? Math.max(region[i], body[i]) : body[i];
+  return out;
+}
+
 export interface ComposeOptions {
   threshold?: number;
   /** Blobs smaller than this fraction of the largest are dropped. Default 0.05. */
   minComponentFraction?: number;
   /** Holes up to this fraction of the person area are filled. Default 0.01. */
   maxHoleFraction?: number;
+  /** Whole-body mask (full-frame box) from the pose model: limits the region crops. */
+  body?: CropProb | null;
+  /** How far region detail may extend past the body mask, px. Default max(w, h) / 128. */
+  bodyMarginPx?: number;
 }
 
 /** Crop probabilities -> cleaned full-frame binary mask (before edge refinement). */
 export function composeMask(crops: CropProb[], width: number, height: number, opts: ComposeOptions = {}): PersonMask {
-  const prob = composeProbability(crops, width, height);
-  let mask = thresholdMask(prob, width, height, opts.threshold ?? 0.5);
+  const t = opts.threshold ?? 0.5;
+  const kept = crops.filter((c) => borderFill(c, t) <= BOX_FILL_LIMIT);
+  let prob = composeProbability(kept, width, height);
+  if (opts.body) {
+    const body = composeProbability([opts.body], width, height);
+    const r = opts.bodyMarginPx ?? Math.ceil(Math.max(width, height) / 128);
+    prob = gateProbability(prob, body, width, height, r, t);
+  }
+  let mask = thresholdMask(prob, width, height, t);
   mask = keepMainComponents(mask, opts.minComponentFraction ?? 0.05);
   let area = 0;
   for (let i = 0; i < mask.data.length; i++) area += mask.data[i];
-  return fillSmallHoles(mask, Math.floor(area * (opts.maxHoleFraction ?? 0.01)));
+  const out = fillSmallHoles(mask, Math.floor(area * (opts.maxHoleFraction ?? 0.01)));
+  out.info = { regions: crops.length, regionsDropped: crops.length - kept.length, bodyMask: !!opts.body };
+  return out;
 }

@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
 import {
+  BOX_FILL_LIMIT,
+  borderFill,
   composeMask,
+  dilate,
+  gateProbability,
   composeProbability,
   fillSmallHoles,
   keepMainComponents,
@@ -95,5 +99,62 @@ describe("mask cleanup", () => {
     const m = composeMask([crop], 10, 10, { maxHoleFraction: 0.05 });
     expect(m.width).toBe(10);
     expect(m.data.reduce((a, b) => a + b, 0)).toBe(36);
+  });
+});
+
+describe("whole-body gating (crops that fill their box)", () => {
+  const W = 40;
+  const H = 40;
+  /** A crop whose mask says "person" everywhere: the failure seen on real phones. */
+  const filled = (x: number, y: number, w: number, h: number): CropProb => ({
+    x, y, w, h, maskWidth: 8, maskHeight: 8, prob: new Float32Array(64).fill(1),
+  });
+  /** Body: a 10 px wide vertical bar in the middle of the frame. */
+  const bodyProb = new Float32Array(W * H);
+  for (let y = 5; y < 35; y++) for (let x = 15; x < 25; x++) bodyProb[y * W + x] = 1;
+  const body: CropProb = { x: 0, y: 0, w: W, h: H, maskWidth: W, maskHeight: H, prob: bodyProb };
+
+  it("borderFill measures the share of person pixels on the crop border", () => {
+    expect(borderFill(filled(0, 0, 10, 10))).toBe(1);
+    const ring = new Float32Array(16);
+    ring[5] = ring[6] = ring[9] = ring[10] = 1; // centre 2x2 only
+    expect(borderFill({ x: 0, y: 0, w: 4, h: 4, maskWidth: 4, maskHeight: 4, prob: ring })).toBe(0);
+    expect(BOX_FILL_LIMIT).toBeLessThan(1);
+  });
+
+  it("dilate grows a pixel into a (2r+1) square, clipped to the frame", () => {
+    const m = new Uint8Array(25);
+    m[12] = 1;
+    expect([...dilate(m, 5, 5, 1)].reduce((a, b) => a + b, 0)).toBe(9);
+    expect([...dilate(m, 5, 5, 5)].every((v) => v === 1)).toBe(true);
+    expect([...dilate(new Uint8Array(25), 5, 5, 2)].every((v) => v === 0)).toBe(true);
+  });
+
+  it("gateProbability keeps region detail only near the body", () => {
+    const region = new Float32Array(W * H).fill(1);
+    const out = gateProbability(region, bodyProb, W, H, 2);
+    expect(out[20 * W + 20]).toBe(1); // on the body
+    expect(out[20 * W + 13]).toBe(1); // within 2 px of it
+    expect(out[20 * W + 5]).toBe(0); // far away: body prob only
+  });
+
+  it("a box-filling region crop no longer widens the mask", () => {
+    const crop = filled(5, 5, 30, 30); // wall included
+    const naive = composeMask([crop], W, H);
+    expect(naive.data.reduce((a, b) => a + b, 0)).toBe(0); // dropped: it filled its box
+    expect(naive.info).toEqual({ regions: 1, regionsDropped: 1, bodyMask: false });
+    const gated = composeMask([crop], W, H, { body, bodyMarginPx: 1 });
+    const widthAt20 = [...gated.data.slice(20 * W, 21 * W)].reduce((a, b) => a + b, 0);
+    expect(widthAt20).toBe(10); // the body bar, not the 30 px crop
+    expect(gated.info).toEqual({ regions: 1, regionsDropped: 1, bodyMask: true });
+  });
+
+  it("an honest region crop still adds detail inside the body margin", () => {
+    const p = new Float32Array(64);
+    for (let y = 0; y < 8; y++) for (let x = 2; x < 6; x++) p[y * 8 + x] = 1; // person in the middle of the crop
+    const crop: CropProb = { x: 12, y: 10, w: 16, h: 16, maskWidth: 8, maskHeight: 8, prob: p };
+    const m = composeMask([crop], W, H, { body, bodyMarginPx: 2 });
+    expect(m.info?.regionsDropped).toBe(0);
+    expect(m.data[20 * W + 20]).toBe(1);
   });
 });

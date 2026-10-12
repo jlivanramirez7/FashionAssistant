@@ -2,6 +2,7 @@
 // 2 s -> green border, spoken prompt, auto-advance.
 import { currentOrientation, placementOk } from "../../capture/sensors";
 import { say } from "../../capture/voice";
+import { diagLog } from "../../diagnostics/log";
 import type { AppContext } from "../context";
 import { loadDebug } from "../debug";
 import { button, h } from "../dom";
@@ -53,6 +54,11 @@ export function render(root: HTMLElement, ctx: AppContext): () => void {
   function advance(): void {
     if (done) return;
     done = true;
+    const o = currentOrientation();
+    diagLog(
+      `phone placed: tilt ${o ? o.tiltDeg.toFixed(1) : "?"} roll ${o ? o.rollDeg.toFixed(1) : "?"}; ` +
+        `video ${s.video.videoWidth}x${s.video.videoHeight}; after ${((performance.now() - t0) / 1000).toFixed(1)}s`,
+    );
     border.set("green");
     void say("Great. Now walk back until I can see all of you.");
     ctx.dispatch({ type: "PLACED" });

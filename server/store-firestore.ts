@@ -3,7 +3,7 @@
 // plus top-level sessions/{sha256 hex}. The doc <-> JSON mapping functions
 // are pure and exported for unit tests.
 import { FieldValue, Firestore, Timestamp } from "@google-cloud/firestore";
-import type { CorrectionFactors, DeviceProfile, ScanDoc, UserDoc } from "../src/types.ts";
+import type { CorrectionFactors, DeviceProfile, DiagAttempt, DiagReport, ScanDoc, UserDoc } from "../src/types.ts";
 import type { ScanPatch, SessionRecord, Store, StoredDevice, UserPatch } from "./store.ts";
 import { mergeUserDoc } from "./store.ts";
 
@@ -95,6 +95,26 @@ export function factorsFromFirestore(data: Data): CorrectionFactors {
   return { ...out, male: out.male ?? {}, female: out.female ?? {}, unspecified: out.unspecified ?? {} };
 }
 
+export function diagReportToFirestore(report: DiagReport): Data {
+  const { id: _id, ...rest } = report;
+  return mapTimes(rest as unknown as Data, ["createdAt", "updatedAt"], toTs);
+}
+
+export function diagReportFromFirestore(id: string, data: Data): DiagReport {
+  return { ...(mapTimes(data, ["createdAt", "updatedAt"], toMillis) as unknown as DiagReport), id };
+}
+
+export function diagAttemptToFirestore(attempt: DiagAttempt): Data {
+  return mapTimes(attempt as unknown as Data, ["createdAt"], toTs);
+}
+
+export function diagAttemptFromFirestore(data: Data): DiagAttempt {
+  return mapTimes(data, ["createdAt"], toMillis) as unknown as DiagAttempt;
+}
+
+/** Fields the report list needs (skips the sensor log and profile). */
+export const DIAG_LIST_FIELDS = ["createdAt", "updatedAt", "appVersion", "outcome", "attempts", "summary", "inputs"] as const;
+
 export function sessionToFirestore(rec: SessionRecord): Data {
   return {
     uid: rec.uid,
@@ -127,6 +147,9 @@ export class FirestoreStore implements Store {
   }
   private scans(uid: string) {
     return this.user(uid).collection("scans");
+  }
+  private diag(uid: string) {
+    return this.user(uid).collection("diagnostics");
   }
   private sessions() {
     return this.db.collection("sessions");
@@ -208,9 +231,47 @@ export class FirestoreStore implements Store {
     await this.user(uid).collection("settings").doc("correctionFactors").set(factorsToFirestore(factors, now));
   }
 
+  async listDiagReports(uid: string): Promise<DiagReport[]> {
+    const qs = await this.diag(uid).orderBy("createdAt", "desc").select(...DIAG_LIST_FIELDS).get();
+    return qs.docs.map((d) => diagReportFromFirestore(d.id, d.data()));
+  }
+
+  async getDiagReport(uid: string, id: string): Promise<DiagReport | null> {
+    const snap = await this.diag(uid).doc(id).get();
+    return snap.exists ? diagReportFromFirestore(snap.id, snap.data() as Data) : null;
+  }
+
+  async putDiagReport(uid: string, id: string, report: DiagReport): Promise<void> {
+    await this.diag(uid).doc(id).set(diagReportToFirestore(report));
+  }
+
+  async listDiagAttempts(uid: string, id: string): Promise<DiagAttempt[]> {
+    const qs = await this.diag(uid).doc(id).collection("attempts").get();
+    return qs.docs.map((d) => diagAttemptFromFirestore(d.data())).sort((a, b) => a.n - b.n);
+  }
+
+  async putDiagAttempt(uid: string, id: string, attempt: DiagAttempt): Promise<void> {
+    await this.diag(uid).doc(id).collection("attempts").doc(String(attempt.n)).set(diagAttemptToFirestore(attempt));
+  }
+
+  async putDiagFrame(uid: string, id: string, frameId: string, jpeg: Buffer, now: number): Promise<void> {
+    await this.diag(uid).doc(id).collection("frames").doc(frameId).set({ jpeg, createdAt: fromMillis(now) });
+  }
+
+  async getDiagFrame(uid: string, id: string, frameId: string): Promise<Buffer | null> {
+    const snap = await this.diag(uid).doc(id).collection("frames").doc(frameId).get();
+    const jpeg = snap.exists ? (snap.data() as Data).jpeg : null;
+    if (jpeg instanceof Uint8Array) return Buffer.from(jpeg);
+    return null;
+  }
+
+  async deleteDiagReport(uid: string, id: string): Promise<void> {
+    await this.db.recursiveDelete(this.diag(uid).doc(id));
+  }
+
   async deleteAllForUser(uid: string): Promise<void> {
     // Deletes users/{uid} and every document in its subcollections
-    // (scans, devices, settings) through a BulkWriter.
+    // (scans, devices, settings, diagnostics) through a BulkWriter.
     await this.db.recursiveDelete(this.user(uid));
   }
 

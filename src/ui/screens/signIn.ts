@@ -19,7 +19,7 @@ export function render(root: HTMLElement, ctx: AppContext): () => void {
       h("ul", { class: "hero-points" },
         h("li", null, "Three quick poses, hands-free"),
         h("li", null, "20+ tailoring measurements"),
-        h("li", null, "Photos never leave your phone"),
+        h("li", null, "Photos stay on your phone unless you turn on troubleshooting"),
       ),
     ),
     msg,

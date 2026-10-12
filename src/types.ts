@@ -282,6 +282,125 @@ export interface PipelineResult {
   retakeViews: { view: ViewName; reason: RetakeReason }[];
   /** New focal length if the height solve overrode the spec (> 5% off). */
   solvedFocalLengthPx?: number;
+  /** Per-frame / per-view trace (only when runPipeline is called with trace: true). */
+  trace?: PipelineTrace;
+}
+
+// ---------------------------------------------------------------- troubleshooting trace
+
+/** What the pipeline saw in one frame (troubleshooting reports). */
+export interface FrameTrace {
+  view: ViewName;
+  index: number;
+  width: number;
+  height: number;
+  tiltDeg: number;
+  rollDeg: number;
+  /** Heavy pose found a person. */
+  pose: boolean;
+  /** Visibility (0..1) of the landmarks the geometry depends on. */
+  keyVisibility?: Record<string, number>;
+  /** Normalized heavy-pose landmarks, rounded (x, y, visibility). */
+  landmarks?: { x: number; y: number; v: number }[];
+  mask: boolean;
+  /** Share of the frame covered by the person mask (0..1). */
+  maskCoverage?: number;
+  quality?: QualityScore;
+  /** Pixel points used for scale: floor contact under the feet, top of the head. */
+  feet?: { u: number; v: number };
+  head?: { u: number; v: number };
+  /** Focal length this frame alone implies (profile resolution), from height + floor. */
+  focalSolvedPx?: number;
+  distanceCm?: number;
+  heightScale?: number;
+  scaleAgreementPct?: number;
+  /** Fed into the measurements. */
+  used: boolean;
+  /** Why the frame was not used. */
+  skipped?: string;
+}
+
+export interface ViewTrace {
+  view: ViewName;
+  frames: number;
+  usable: number;
+  qualityMedian?: number;
+  agreementMedianPct?: number;
+  distanceMedianCm?: number;
+  /** Quality-check failures by reason. */
+  reasons: Partial<Record<RetakeReason, number>>;
+  decision: "ok" | RetakeReason;
+}
+
+export interface PipelineTrace {
+  frames: FrameTrace[];
+  views: ViewTrace[];
+  focalSpecPx: number;
+  focalSolvedPx?: number;
+  focalOverride: boolean;
+  measurementCount: number;
+  thresholds: { scaleAgreementLimitPct: number; focalOverrideFrac: number; minVisibility: number };
+}
+
+// ---------------------------------------------------------------- troubleshooting reports
+// Opt-in ("Save troubleshooting data"). users/{uid}/diagnostics/{id} with
+// subcollections attempts/{n} (one per processing run) and frames/{frameId}
+// (one JPEG per captured frame).
+
+export type DiagOutcome = "in-progress" | "results" | "retake" | "error";
+
+/** One feedback-log line; t = ms since the scan started. */
+export interface DiagLogEntry {
+  t: number;
+  msg: string;
+}
+
+/** A captured frame stored with the report (bytes live in frames/{id}). */
+export interface DiagFrameRef {
+  id: string;
+  view: ViewName;
+  index: number;
+  timestampMs: number;
+  width: number;
+  height: number;
+  orientation: Orientation;
+}
+
+/** users/{uid}/diagnostics/{id}/attempts/{n}: one processing run. */
+export interface DiagAttempt {
+  n: number;
+  createdAt: number;
+  outcome: Exclude<DiagOutcome, "in-progress">;
+  /** Frames fed to this run, in pipeline order. */
+  frames: DiagFrameRef[];
+  retakeViews?: { view: ViewName; reason: RetakeReason }[];
+  /** Views still failing after the retake limit (scan saved as partial). */
+  unresolved?: ViewName[];
+  error?: string;
+  scanId?: string;
+  measurements?: Measurements;
+  rawMeasurements?: RawMeasurements;
+  diagnostics?: PipelineResult["diagnostics"];
+  trace?: PipelineTrace;
+  /** Feedback log since the previous attempt. */
+  log: DiagLogEntry[];
+}
+
+/** users/{uid}/diagnostics/{id}: one scan session. */
+export interface DiagReport {
+  id?: string;
+  createdAt: number;
+  updatedAt: number;
+  appVersion: string;
+  userAgent: string;
+  inputs: ScanInputs;
+  profile: DeviceProfile;
+  outcome: DiagOutcome;
+  attempts: number;
+  /** One line, e.g. "retake: front blurry". */
+  summary: string;
+  /** Phone orientation samples over the scan (downsampled). */
+  sensorLog?: Orientation[];
 }
 
 export type ProgressStage = "pose" | "outline" | "front" | "side" | "back" | "measure";

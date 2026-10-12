@@ -2,7 +2,7 @@
 // section 11: users/{uid}, users/{uid}/scans/{id}, users/{uid}/devices/{id},
 // users/{uid}/settings/correctionFactors, plus sessions/{sha256(id) hex}.
 // All timestamps cross this interface as epoch ms.
-import type { CorrectionFactors, DeviceProfile, ScanDoc, UserDoc } from "../src/types.ts";
+import type { CorrectionFactors, DeviceProfile, DiagAttempt, DiagReport, ScanDoc, UserDoc } from "../src/types.ts";
 import type { ScanPatch, UserPatch } from "./validate.ts";
 
 export type { ScanPatch, UserPatch };
@@ -43,6 +43,19 @@ export interface Store {
 
   getFactors(uid: string): Promise<CorrectionFactors | null>;
   putFactors(uid: string, factors: CorrectionFactors, now: number): Promise<void>;
+
+  /** Troubleshooting reports (opt-in): users/{uid}/diagnostics/{id}. Newest first. */
+  listDiagReports(uid: string): Promise<DiagReport[]>;
+  getDiagReport(uid: string, id: string): Promise<DiagReport | null>;
+  putDiagReport(uid: string, id: string, report: DiagReport): Promise<void>;
+  /** attempts/{n}, ordered by n. */
+  listDiagAttempts(uid: string, id: string): Promise<DiagAttempt[]>;
+  putDiagAttempt(uid: string, id: string, attempt: DiagAttempt): Promise<void>;
+  /** frames/{frameId}: one JPEG. */
+  putDiagFrame(uid: string, id: string, frameId: string, jpeg: Buffer, now: number): Promise<void>;
+  getDiagFrame(uid: string, id: string, frameId: string): Promise<Buffer | null>;
+  /** The report, its attempts and frames. */
+  deleteDiagReport(uid: string, id: string): Promise<void>;
 
   /** users/{uid} and every subcollection. */
   deleteAllForUser(uid: string): Promise<void>;

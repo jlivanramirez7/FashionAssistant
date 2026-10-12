@@ -124,6 +124,31 @@ describe("runPipeline (fake vision)", () => {
     expect(r.measurements.inseam).toBeDefined();
   });
 
+  it("trace: off by default; with trace: true explains each frame and view", async () => {
+    const plain = setup({ noPerson: ["side"] });
+    const r0 = await runPipeline({ captures: plain.captures, profile: profileFor(DEFAULT_CAM), inputs: inputs(175), factors: null, vision: plain.vision });
+    expect(r0.trace).toBeUndefined();
+
+    const { captures, vision } = setup({ noPerson: ["side"], reason: { back: "blurry" } });
+    const r = await runPipeline({ captures, profile: profileFor(DEFAULT_CAM), inputs: inputs(175), factors: null, vision, trace: true });
+    const t = r.trace!;
+    expect(t.frames).toHaveLength(9);
+    expect(t.frames.map((f) => f.index)).toEqual([0, 1, 2, 0, 1, 2, 0, 1, 2]);
+    const front = t.frames.filter((f) => f.view === "front");
+    expect(front.every((f) => f.used && f.pose && f.mask && f.distanceCm! > 0 && !!f.feet && !!f.head)).toBe(true);
+    expect(front[0].landmarks).toHaveLength(33);
+    expect(front[0].keyVisibility).toHaveProperty("lHeel");
+    expect(front[0].maskCoverage!).toBeGreaterThan(0);
+    const side = t.frames.filter((f) => f.view === "side");
+    expect(side.every((f) => !f.used && f.skipped === "no pose found")).toBe(true);
+    expect(t.views.map((v) => [v.view, v.decision])).toEqual([["front", "ok"], ["side", "no-person"], ["back", "blurry"]]);
+    expect(t.views[2].reasons).toEqual({ blurry: 3 });
+    expect(t.views[0].usable).toBe(3);
+    expect(t.measurementCount).toBe(Object.keys(r.measurements).length);
+    expect(t.thresholds.scaleAgreementLimitPct).toBe(2);
+    expect(r.retakeViews).toEqual([{ view: "side", reason: "no-person" }, { view: "back", reason: "blurry" }]);
+  });
+
   it("flags a view whose frames fail the quality check", async () => {
     const { captures, vision } = setup({ reason: { back: "blurry" } });
     const r = await runPipeline({ captures, profile: profileFor(DEFAULT_CAM), inputs: inputs(175), factors: null, vision });

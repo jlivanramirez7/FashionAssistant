@@ -8,6 +8,7 @@ import {
   type MeasurementSpec,
   type Measurements,
   type PoseHint,
+  type RetakeReason,
   type ScanDoc,
   type Units,
   type ViewName,
@@ -110,6 +111,24 @@ export const KEY_VIEWS: Record<MeasurementKey, ViewName[]> = {
   shoulderToWaist: ["front", "side"],
   torsoLength: ["front", "side"],
   footLength: ["side"],
+};
+
+/** Why the last processing run asked to redo a step: short on-screen line + spoken sentence. */
+export const RETAKE_REASON_TEXT: Record<RetakeReason, { title: string; sentence: string }> = {
+  "no-person": {
+    title: "I couldn’t find all of you in those photos",
+    sentence: "I couldn’t find all of you in those photos. Make sure your head and feet are in view.",
+  },
+  blurry: { title: "Those photos were blurry", sentence: "Those photos were blurry. Stand completely still, and add light if you can." },
+  "out-of-frame": {
+    title: "You were too close to the edge",
+    sentence: "Part of you was too close to the edge of the picture. Step back a little and stay centered.",
+  },
+  "distance-mismatch": {
+    title: "Your size didn’t match your height",
+    sentence: "The floor distance didn’t match your height. Check that your feet are visible on the floor and the phone hasn’t moved.",
+  },
+  "pose-mismatch": { title: "The pose didn’t match this step", sentence: "The pose didn’t match this step. Follow the outline." },
 };
 
 /** Keys shown amber/red that a retake could improve (alwaysLowConfidence keys and height excluded). */

@@ -163,12 +163,13 @@ describe("v2 client wiring (CONTRACTS-v2: GIS + /api)", () => {
 
 describe("[S server] static invariants", () => {
   const serverFiles = () => listFiles("server", (p) => p.endsWith(".ts"));
-  it("imports: node:* builtins, the two Google libs, relative .ts files, src/types.ts only", () => {
+  // fflate: zips troubleshooting-report bundles (server/diagnostics.ts).
+  it("imports: node:* builtins, the two Google libs, fflate, relative .ts files, src/types.ts only", () => {
     const problems: string[] = [];
     for (const p of serverFiles()) {
       for (const m of code(p).matchAll(/(?:^|\n)\s*(?:import|export)\b[^"'\n]*?from\s*["']([^"']+)["']|import\(\s*["']([^"']+)["']\s*\)/g)) {
         const spec = m[1] ?? m[2];
-        const ok = spec.startsWith("node:") || spec === "@google-cloud/firestore" || spec === "google-auth-library" ||
+        const ok = spec.startsWith("node:") || spec === "@google-cloud/firestore" || spec === "google-auth-library" || spec === "fflate" ||
           (spec.startsWith(".") && spec.endsWith(".ts") && (!spec.includes("/src/") || spec.endsWith("/src/types.ts")));
         if (!ok) problems.push(`[S server] ${p}: import "${spec}"`);
       }

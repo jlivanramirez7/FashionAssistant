@@ -96,7 +96,22 @@ Timestamps for createdAt/updatedAt/expiresAt).
 | PUT | /api/devices/:deviceId | body `DeviceProfile` -> `{ ok: true }` |
 | GET | /api/settings/correctionFactors | `CorrectionFactors` or `null` |
 | PUT | /api/settings/correctionFactors | body `CorrectionFactors` -> `{ ok: true }` |
+| GET | /api/diagnostics | `DiagReport[]` newest first (troubleshooting reports, list fields only) |
+| GET | /api/diagnostics/:id | `{ report: DiagReport, attempts: DiagAttempt[] }` or 404 |
+| PUT | /api/diagnostics/:id | body `DiagReport` (server sets updatedAt) -> `{ ok: true }` |
+| PUT | /api/diagnostics/:id/attempts/:n | body `DiagAttempt` (n = 1..999, must match) -> `{ ok: true }` |
+| PUT | /api/diagnostics/:id/frames/:frameId | raw `image/jpeg` body, max 1,000,000 bytes -> `{ ok: true }` |
+| GET | /api/diagnostics/:id/frames/:frameId | `image/jpeg` or 404 |
+| GET | /api/diagnostics/:id/report.txt | plain-text report |
+| GET | /api/diagnostics/:id/bundle.zip[?attempt=n] | zip: report.txt, report.json, attempt-N.json, plus manifest.json + frames/<view>/<i>.jpg for the chosen attempt (default last) in the replay.html debug-capture format |
+| DELETE | /api/diagnostics/:id | deletes the report, its attempts and frames -> `{ ok: true }` |
 | DELETE | /api/me/data | deletes users/{uid} and all subcollections + all of this uid's sessions; clears cookie -> `{ ok: true }` |
+
+Troubleshooting reports (users/{uid}/diagnostics/{id}, subcollections
+attempts/{n} and frames/{frameId}) are OPT-IN: written only when the user
+turns on "Save troubleshooting data" (Setup or Home > Troubleshooting,
+remembered per device in localStorage). They are the only place photos are
+stored; scan docs still reject image-like data. Added 2026-10-11.
 
 Server-side validation (pure, unit-tested): body size limit 1 MB;
 reject any field that looks like image data (strings > 10 kB, data: URLs,

@@ -1313,3 +1313,96 @@ video.preview {
     transition: none !important;
   }
 }
+
+/* ------------------------------------------------------------- troubleshooting */
+
+.diag-row {
+  padding: 0;
+  overflow: hidden;
+}
+
+.diag-head {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 4px 12px;
+  width: 100%;
+  padding: 14px 18px;
+  background: none;
+  border: 0;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.diag-date {
+  font-weight: 600;
+}
+
+.diag-outcome {
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: var(--muted);
+}
+
+.diag-outcome.results {
+  color: var(--green);
+}
+
+.diag-outcome.retake {
+  color: var(--amber);
+}
+
+.diag-outcome.error {
+  color: var(--red);
+}
+
+.diag-summary {
+  grid-column: 1 / -1;
+  overflow-wrap: anywhere;
+}
+
+.diag-detail {
+  padding: 0 18px 16px;
+  border-top: 1px solid var(--line);
+}
+
+.diag-thumbs {
+  display: flex;
+  gap: 6px;
+  overflow-x: auto;
+  padding: 12px 0;
+}
+
+.diag-thumbs img {
+  display: block;
+  height: 96px;
+  width: auto;
+  border-radius: 8px;
+  background: var(--surface-2);
+}
+
+.diag-text {
+  width: 100%;
+  min-height: 180px;
+  padding: 10px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--line-strong);
+  background: var(--surface-2);
+  color: var(--text);
+  font: 0.75rem/1.4 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  white-space: pre;
+}
+
+.diag-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.diag-actions .btn {
+  text-decoration: none;
+  display: inline-flex;
+  align-items: center;
+}

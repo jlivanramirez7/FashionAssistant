@@ -24,6 +24,7 @@ export function render(root: HTMLElement, ctx: AppContext): () => void {
     last,
     h("div", { class: "card list" },
       listRow("History", () => ctx.dispatch({ type: "OPEN_HISTORY" }), "Past scans"),
+      listRow("Troubleshooting", () => ctx.dispatch({ type: "OPEN_DIAGNOSTICS" }), "Scan reports"),
       listRow("Sign out", () => {
         signOutUser()
           .then(() => {

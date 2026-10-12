@@ -5,26 +5,11 @@
 import { getScan } from "../../data/scans";
 import type { ScanDoc } from "../../types";
 import { closeFrames, errorMessage, type AppContext } from "../context";
-import { button, h, screen, setChildren, topBar } from "../dom";
+import { button, copyText, h, screen, setChildren, topBar } from "../dom";
 import { copyAllText, formatDate, groupMeasurements, retakeViewsFor, visibleMeasurements } from "../format";
 import { startFromTap } from "../hardware";
 import { createMeasurementRow } from "../parts/measurementRow";
 import { createUnitToggle } from "../parts/unitToggle";
-
-async function copyText(text: string): Promise<void> {
-  if (navigator.clipboard?.writeText) {
-    await navigator.clipboard.writeText(text);
-    return;
-  }
-  const ta = document.createElement("textarea");
-  ta.value = text;
-  ta.style.position = "fixed";
-  ta.style.opacity = "0";
-  document.body.appendChild(ta);
-  ta.select();
-  document.execCommand("copy");
-  ta.remove();
-}
 
 export function render(root: HTMLElement, ctx: AppContext): () => void {
   const state = ctx.state;

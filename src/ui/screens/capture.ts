@@ -9,6 +9,7 @@
 import { grabFrame } from "../../capture/camera";
 import { currentOrientation, orientationSince } from "../../capture/sensors";
 import { chime, say } from "../../capture/voice";
+import { diagLog } from "../../diagnostics/log";
 import { VIEWS, type CapturedFrame, type Landmark, type Orientation, type PoseHint, type ViewName } from "../../types";
 import { checkPose, detectPoseLive, faceVisibility, initVision } from "../../vision";
 import {
@@ -22,7 +23,7 @@ import {
 } from "../captureLogic";
 import { closeFrames, errorMessage, type AppContext } from "../context";
 import { button, h } from "../dom";
-import { borderFor, hintText, STEP_TEXT } from "../format";
+import { borderFor, hintText, RETAKE_REASON_TEXT, STEP_TEXT } from "../format";
 import { createPoseGuide } from "../parts/poseGuide";
 import { createStatusBorder } from "../parts/statusBorder";
 
@@ -52,6 +53,9 @@ export function render(root: HTMLElement, ctx: AppContext): () => void {
   if (state.name !== "capture") return () => undefined;
   const view: ViewName = state.view;
   const s = ctx.session;
+  /** Why the last processing run sent us back to this step. */
+  const retakeReason = state.retake ? [...s.retakes].reverse().find((r) => r.step === view)?.reason : undefined;
+  const reasonText = retakeReason ? RETAKE_REASON_TEXT[retakeReason] : undefined;
 
   const border = createStatusBorder("red");
   const guide = createPoseGuide(s.video);
@@ -84,7 +88,7 @@ export function render(root: HTMLElement, ctx: AppContext): () => void {
         steps,
         cancelBtn,
       ),
-      state.retake ? h("p", { class: "retake-tag" }, "Retake") : null,
+      state.retake ? h("p", { class: "retake-tag" }, reasonText ? `Retake: ${reasonText.title}` : "Retake") : null,
       hintEl,
       subEl,
     ),
@@ -122,7 +126,10 @@ export function render(root: HTMLElement, ctx: AppContext): () => void {
   const frontFace = view === "back" ? frontFaceBaseline(s.captures.front) : undefined;
 
   const step = STEP_TEXT[view];
-  const intro = state.retake ? `Let's redo this step. ${step.sentence}` : step.sentence;
+  const intro = state.retake
+    ? `Let's redo this step. ${reasonText ? `${reasonText.sentence} ` : ""}${step.sentence}`
+    : step.sentence;
+  diagLog(`capture ${view}: start${state.retake ? ` (retake${retakeReason ? `: ${retakeReason}` : ""})` : ""}`);
   const introAt = performance.now();
   void say(intro);
 
@@ -137,6 +144,7 @@ export function render(root: HTMLElement, ctx: AppContext): () => void {
     .catch((e: unknown) => {
       if (!alive) return;
       errorEl.textContent = `Could not load the pose model: ${errorMessage(e)}. Use Timer to capture without it.`;
+      diagLog(`capture ${view}: live pose model failed: ${errorMessage(e)}`);
       errorEl.hidden = false;
       // Keep the timer usable without the model.
       ready = true;
@@ -155,10 +163,12 @@ export function render(root: HTMLElement, ctx: AppContext): () => void {
       timerBtn.textContent = `Timer ${TIMER_SECONDS}s`;
       timerBtn.classList.remove("active");
       showSub(null);
+      diagLog(`capture ${view}: timer cancelled`);
       void say("Timer cancelled.");
       return;
     }
     timerEnd = performance.now() + TIMER_SECONDS * 1000;
+    diagLog(`capture ${view}: timer started (live hint ${hint ?? "none"})`);
     timerSpoken = Infinity;
     timerBtn.textContent = "Cancel timer";
     timerBtn.classList.add("active");
@@ -197,6 +207,7 @@ export function render(root: HTMLElement, ctx: AppContext): () => void {
       trustOrientation: trust.trusted,
     });
     if (next !== hint) {
+      diagLog(`capture ${view}: hint ${next}${lm ? "" : " (no live landmarks)"}`);
       hint = next;
       hintSince = now;
     }
@@ -205,6 +216,7 @@ export function render(root: HTMLElement, ctx: AppContext): () => void {
     if (updateTrust(trust, view, hint, now, now - introAt >= INTRO_MS)) {
       // The live model can't confirm the turn; trust the user from here on.
       lastSpoken = { hint: null, at: now };
+      diagLog(`capture ${view}: orientation check waived (stuck on ${hint})`);
       void say("Okay, I'll take your word for it. Hold the pose.");
     }
 
@@ -245,6 +257,7 @@ export function render(root: HTMLElement, ctx: AppContext): () => void {
     timerBtn.disabled = true;
     holdFill.style.width = "100%";
     chime();
+    diagLog(`capture ${view}: grabbing frames (${manual ? "timer" : "auto, pose ok"})`);
     hintEl.textContent = "Hold still";
     showSub("Capturing...");
     const frames: CapturedFrame[] = [];
@@ -267,6 +280,7 @@ export function render(root: HTMLElement, ctx: AppContext): () => void {
         }
         if (!manual && performance.now() - lastGood > GLITCH_MS) {
           // Pose broke while capturing: start the hold again.
+          diagLog(`capture ${view}: pose broke after ${frames.length} frames, restarting hold`);
           discard();
           backToWaiting();
           return;
@@ -289,6 +303,7 @@ export function render(root: HTMLElement, ctx: AppContext): () => void {
       discard();
       backToWaiting();
       errorEl.textContent = `Could not grab a frame: ${errorMessage(e)}`;
+      diagLog(`capture ${view}: frame grab failed: ${errorMessage(e)}`);
       errorEl.hidden = false;
       return;
     }
@@ -297,6 +312,11 @@ export function render(root: HTMLElement, ctx: AppContext): () => void {
       return;
     }
     phase = "done";
+    const o0 = frames[0].orientation;
+    diagLog(
+      `capture ${view}: kept ${frames.length} frames ${frames[0].width}x${frames[0].height}, ` +
+        `tilt ${o0.tiltDeg.toFixed(1)} roll ${o0.rollDeg.toFixed(1)}, live landmarks ${frames.filter((f) => f.liveLandmarks).length}/${frames.length}`,
+    );
     closeFrames(s, [view]);
     s.captures[view] = frames;
     border.set("green");

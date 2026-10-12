@@ -25,6 +25,7 @@ const SCREENS: Record<Exclude<StateName, "boot">, () => Promise<Screen>> = {
   history: () => import("./ui/screens/history"),
   validation: () => import("./ui/screens/validation"),
   validationSummary: () => import("./ui/screens/validationSummary"),
+  diagnostics: () => import("./ui/screens/diagnostics"),
 };
 
 function renderNotConfigured(root: HTMLElement): void {

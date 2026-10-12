@@ -68,6 +68,22 @@ export function topBar(title: string, onBack: (() => void) | null, right?: Child
   return h("header", { class: "top-bar" }, back, h("h1", null, title), right ? h("div", { class: "top-bar-right" }, right) : null);
 }
 
+/** Copy text to the clipboard (execCommand fallback for older browsers). */
+export async function copyText(text: string): Promise<void> {
+  if (navigator.clipboard?.writeText) {
+    await navigator.clipboard.writeText(text);
+    return;
+  }
+  const ta = document.createElement("textarea");
+  ta.value = text;
+  ta.style.position = "fixed";
+  ta.style.opacity = "0";
+  document.body.appendChild(ta);
+  ta.select();
+  document.execCommand("copy");
+  ta.remove();
+}
+
 /** Tappable list row: label, optional detail, chevron. */
 export function listRow(label: string, onClick: () => void, detail?: string, cls = ""): HTMLButtonElement {
   const b = h("button", { class: `list-row ${cls}`.trim(), type: "button" },

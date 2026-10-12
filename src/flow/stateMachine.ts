@@ -4,6 +4,7 @@
 //   processing > (retake failing step(s)) > processing > results
 //   results > place > capture(low-confidence steps) > processing > results
 //   home/history > results > validation; history > validationSummary
+//   home > diagnostics (troubleshooting reports)
 //
 // Unknown events leave the state unchanged (the SAME object is returned,
 // so the shell can skip re-rendering).
@@ -24,7 +25,8 @@ export type State =
   | { name: "results"; scanId: string; from: ResultsFrom }
   | { name: "history" }
   | { name: "validation"; scanId: string; from: ResultsFrom }
-  | { name: "validationSummary" };
+  | { name: "validationSummary" }
+  | { name: "diagnostics" };
 
 export type StateName = State["name"];
 
@@ -44,6 +46,7 @@ export type Event =
   | { type: "ADD_TAPE" }
   | { type: "VALIDATION_SAVED" }
   | { type: "OPEN_VALIDATION_SUMMARY" }
+  | { type: "OPEN_DIAGNOSTICS" }
   | { type: "BACK" }
   | { type: "DONE" }
   | { type: "DATA_DELETED" };
@@ -90,6 +93,8 @@ export function transition(state: State, event: Event): State {
           return { name: "history" };
         case "OPEN_SCAN":
           return { name: "results", scanId: event.scanId, from: "home" };
+        case "OPEN_DIAGNOSTICS":
+          return { name: "diagnostics" };
         default:
           return state;
       }
@@ -183,5 +188,8 @@ export function transition(state: State, event: Event): State {
 
     case "validationSummary":
       return event.type === "BACK" ? { name: "history" } : state;
+
+    case "diagnostics":
+      return event.type === "BACK" ? { name: "home" } : state;
   }
 }

@@ -1,4 +1,5 @@
 // Shared app context handed to every screen's render(root, ctx).
+import type { DiagRecorder } from "../diagnostics/recorder";
 import type { Event, State } from "../flow/stateMachine";
 import type {
   CapturedFrame,
@@ -32,6 +33,8 @@ export interface ScanSession {
   /** Views the pipeline still flagged after the retake limit. */
   unresolved: ViewName[];
   debugCapture: boolean;
+  /** "Save troubleshooting data" recorder for this scan (null when the toggle is off). */
+  diag: DiagRecorder | null;
   /** Scan id once saved (the retake-from-Results flow updates it). */
   scanId: string | null;
   /** initVision({ live: true }) started at the Start tap. */
@@ -81,6 +84,7 @@ export function newSession(video: HTMLVideoElement): ScanSession {
     retakeCount: {},
     unresolved: [],
     debugCapture: false,
+    diag: null,
     scanId: null,
     visionLive: null,
   };

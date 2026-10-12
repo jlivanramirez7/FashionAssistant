@@ -1,7 +1,7 @@
 // In-memory Store for local development and tests (DATA_BACKEND=memory).
 // Data is lost on restart.
 import { randomBytes } from "node:crypto";
-import type { CorrectionFactors, DeviceProfile, ScanDoc, UserDoc } from "../src/types.ts";
+import type { CorrectionFactors, DeviceProfile, DiagAttempt, DiagReport, ScanDoc, UserDoc } from "../src/types.ts";
 import type { ScanPatch, SessionRecord, Store, StoredDevice, UserPatch } from "./store.ts";
 import { mergeUserDoc } from "./store.ts";
 
@@ -10,6 +10,13 @@ interface UserData {
   scans: Map<string, ScanDoc>;
   devices: Map<string, StoredDevice>;
   factors: CorrectionFactors | null;
+  diag: Map<string, DiagData>;
+}
+
+interface DiagData {
+  report: DiagReport | null;
+  attempts: Map<number, DiagAttempt>;
+  frames: Map<string, Buffer>;
 }
 
 /** 20-char auto id like Firestore's. */
@@ -30,7 +37,7 @@ export class MemoryStore implements Store {
   private data(uid: string): UserData {
     let d = this.users.get(uid);
     if (!d) {
-      d = { doc: null, scans: new Map(), devices: new Map(), factors: null };
+      d = { doc: null, scans: new Map(), devices: new Map(), factors: null, diag: new Map() };
       this.users.set(uid, d);
     }
     return d;
@@ -103,6 +110,58 @@ export class MemoryStore implements Store {
 
   async putFactors(uid: string, factors: CorrectionFactors, now: number): Promise<void> {
     this.data(uid).factors = { ...clone(factors), updatedAt: factors.updatedAt ?? now };
+  }
+
+  private diagData(uid: string, id: string): DiagData {
+    const diag = this.data(uid).diag;
+    let d = diag.get(id);
+    if (!d) {
+      d = { report: null, attempts: new Map(), frames: new Map() };
+      diag.set(id, d);
+    }
+    return d;
+  }
+
+  async listDiagReports(uid: string): Promise<DiagReport[]> {
+    const diag = this.users.get(uid)?.diag;
+    if (!diag) return [];
+    return [...diag.entries()]
+      .filter(([, d]) => d.report)
+      .map(([id, d]) => ({ ...clone(d.report!), id }))
+      .sort((a, b) => b.createdAt - a.createdAt);
+  }
+
+  async getDiagReport(uid: string, id: string): Promise<DiagReport | null> {
+    const r = this.users.get(uid)?.diag.get(id)?.report;
+    return r ? { ...clone(r), id } : null;
+  }
+
+  async putDiagReport(uid: string, id: string, report: DiagReport): Promise<void> {
+    const stored = clone(report);
+    delete stored.id;
+    this.diagData(uid, id).report = stored;
+  }
+
+  async listDiagAttempts(uid: string, id: string): Promise<DiagAttempt[]> {
+    const a = this.users.get(uid)?.diag.get(id)?.attempts;
+    return a ? [...a.values()].map(clone).sort((x, y) => x.n - y.n) : [];
+  }
+
+  async putDiagAttempt(uid: string, id: string, attempt: DiagAttempt): Promise<void> {
+    this.diagData(uid, id).attempts.set(attempt.n, clone(attempt));
+  }
+
+  async putDiagFrame(uid: string, id: string, frameId: string, jpeg: Buffer): Promise<void> {
+    this.diagData(uid, id).frames.set(frameId, Buffer.from(jpeg));
+  }
+
+  async getDiagFrame(uid: string, id: string, frameId: string): Promise<Buffer | null> {
+    const f = this.users.get(uid)?.diag.get(id)?.frames.get(frameId);
+    return f ? Buffer.from(f) : null;
+  }
+
+  async deleteDiagReport(uid: string, id: string): Promise<void> {
+    this.users.get(uid)?.diag.delete(id);
   }
 
   async deleteAllForUser(uid: string): Promise<void> {

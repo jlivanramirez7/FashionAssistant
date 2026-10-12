@@ -7,6 +7,7 @@ import {
   type CapturedFrame,
   type CorrectionFactors,
   type DeviceProfile,
+  type FrameTrace,
   type Landmark,
   type PersonMask,
   type PipelineResult,
@@ -17,6 +18,7 @@ import {
   type ViewCapture,
   type ViewName,
   type ViewPlane,
+  type ViewTrace,
 } from "../types";
 import { buildCamera, focalForFrame, withFocalLength } from "../geometry/camera";
 import { distanceFromFeet, makeViewPlane, solveFocalLength } from "../geometry/plane";
@@ -203,6 +205,75 @@ interface FrameWork {
   feet: { u: number; v: number } | null;
   head: { u: number; v: number } | null;
   plane?: ViewPlane;
+  /** Focal length (profile resolution) this frame alone implies. */
+  solvedF?: number;
+}
+
+const KEY_LANDMARKS: [string, number][] = [
+  ["nose", LM.nose],
+  ["lShoulder", LM.leftShoulder],
+  ["rShoulder", LM.rightShoulder],
+  ["lHip", LM.leftHip],
+  ["rHip", LM.rightHip],
+  ["lAnkle", LM.leftAnkle],
+  ["rAnkle", LM.rightAnkle],
+  ["lHeel", LM.leftHeel],
+  ["rHeel", LM.rightHeel],
+  ["lToe", LM.leftFootIndex],
+  ["rToe", LM.rightFootIndex],
+];
+
+const r1 = (x: number) => Math.round(x * 10) / 10;
+const r3 = (x: number) => Math.round(x * 1000) / 1000;
+
+function maskCoverage(mask: PersonMask): number {
+  let n = 0;
+  const d = mask.data;
+  for (let i = 0; i < d.length; i++) if (d[i]) n++;
+  return d.length ? n / d.length : 0;
+}
+
+/** Trace record for one frame (troubleshooting reports). */
+function frameTrace(w: FrameWork, index: number, landmarksNorm: Landmark[] | null): FrameTrace {
+  const used = !!w.plane;
+  const t: FrameTrace = {
+    view: w.view,
+    index,
+    width: w.frame.width,
+    height: w.frame.height,
+    tiltDeg: r1(w.frame.orientation.tiltDeg),
+    rollDeg: r1(w.frame.orientation.rollDeg),
+    pose: !!landmarksNorm,
+    mask: !!w.mask,
+    used,
+  };
+  if (landmarksNorm) {
+    t.keyVisibility = Object.fromEntries(KEY_LANDMARKS.map(([k, i]) => [k, r3(landmarksNorm[i]?.visibility ?? 0)]));
+    t.landmarks = landmarksNorm.map((l) => ({ x: r3(l.x), y: r3(l.y), v: r3(l.visibility ?? 0) }));
+  }
+  if (w.mask) t.maskCoverage = r3(maskCoverage(w.mask));
+  if (w.quality) {
+    t.quality = { ...w.quality, sharpness: r3(w.quality.sharpness), score: r3(w.quality.score) };
+  }
+  if (w.feet) t.feet = { u: r1(w.feet.u), v: r1(w.feet.v) };
+  if (w.head) t.head = { u: r1(w.head.u), v: r1(w.head.v) };
+  if (w.solvedF !== undefined) t.focalSolvedPx = r1(w.solvedF);
+  if (w.plane) {
+    t.distanceCm = r1(w.plane.distanceCm);
+    t.heightScale = r3(w.plane.heightScale);
+    t.scaleAgreementPct = r3(w.plane.scaleAgreementPct);
+  } else {
+    t.skipped = !landmarksNorm
+      ? "no pose found"
+      : !w.mask
+        ? "no person outline (segmentation failed)"
+        : !w.feet
+          ? "feet not found"
+          : !w.head
+            ? "top of head not found"
+            : "not used";
+  }
+  return t;
 }
 
 export async function runPipeline(args: {
@@ -212,6 +283,8 @@ export async function runPipeline(args: {
   factors: CorrectionFactors | null;
   onProgress?: ProgressFn;
   vision?: VisionApi;
+  /** Attach a per-frame trace to the result (troubleshooting reports). */
+  trace?: boolean;
 }): Promise<PipelineResult> {
   const t0 = typeof performance !== "undefined" ? performance.now() : Date.now();
   const { captures, profile, inputs, factors } = args;
@@ -286,7 +359,10 @@ export async function runPipeline(args: {
     const f = solveFocalLength(w.camera, feetRowFor(w.camera, w.view, w.feet, H), w.head.v, H, w.view, { uFeet: w.feet.u, uHead: w.head.u });
     if (f !== null) {
       const scale = focalForFrame(profile, w.frame.width, w.frame.height) / profile.focalLengthPx;
-      if (scale > 0) solvedProfileF.push(f / scale);
+      if (scale > 0) {
+        solvedProfileF.push(f / scale);
+        w.solvedF = f / scale;
+      }
     }
   }
   const fSolved = median(solvedProfileF);
@@ -307,6 +383,7 @@ export async function runPipeline(args: {
   const distanceM: Partial<Record<ViewName, number>> = {};
   const qualityScores: Partial<Record<ViewName, number>> = {};
   let worstAgreement = 0;
+  const viewTraces: ViewTrace[] = [];
   const capturedViews = VIEWS.filter((v) => captures.some((c) => c.view === v));
   for (const view of capturedViews) {
     progress(view, 0);
@@ -333,19 +410,24 @@ export async function runPipeline(args: {
     if (aMed !== null) worstAgreement = Math.max(worstAgreement, aMed);
 
     // Retake decisions.
-    if (frames.length === 0) {
-      retakeViews.push({ view, reason: "no-person" });
-      continue;
-    }
     const reasons = ws.map((w) => w.quality?.reason).filter((r): r is RetakeReason => !!r);
-    if (reasons.length * 2 > ws.length) {
-      const counts = new Map<RetakeReason, number>();
-      for (const r of reasons) counts.set(r, (counts.get(r) ?? 0) + 1);
-      const top = [...counts.entries()].sort((a, b) => b[1] - a[1])[0][0];
-      retakeViews.push({ view, reason: top });
-      continue;
-    }
-    if (aMed !== null && aMed > SCALE_AGREEMENT_LIMIT_PCT) retakeViews.push({ view, reason: "distance-mismatch" });
+    const counts = new Map<RetakeReason, number>();
+    for (const r of reasons) counts.set(r, (counts.get(r) ?? 0) + 1);
+    let decision: ViewTrace["decision"] = "ok";
+    if (frames.length === 0) decision = "no-person";
+    else if (reasons.length * 2 > ws.length) decision = [...counts.entries()].sort((a, b) => b[1] - a[1])[0][0];
+    else if (aMed !== null && aMed > SCALE_AGREEMENT_LIMIT_PCT) decision = "distance-mismatch";
+    if (decision !== "ok") retakeViews.push({ view, reason: decision });
+    viewTraces.push({
+      view,
+      frames: ws.length,
+      usable: frames.length,
+      ...(qMed !== null ? { qualityMedian: r3(qMed) } : {}),
+      ...(aMed !== null ? { agreementMedianPct: r3(aMed) } : {}),
+      ...(dMed !== null ? { distanceMedianCm: r1(dMed) } : {}),
+      reasons: Object.fromEntries(counts),
+      decision,
+    });
   }
 
   // 5-9. Measurements.
@@ -383,5 +465,25 @@ export async function runPipeline(args: {
     },
   };
   if (useSolved && fSolved !== null) result.solvedFocalLengthPx = fSolved;
+  if (args.trace) {
+    const perView = new Map<ViewName, number>();
+    result.trace = {
+      frames: work.map((w, i) => {
+        const index = perView.get(w.view) ?? 0;
+        perView.set(w.view, index + 1);
+        return frameTrace(w, index, lmsNorm[i]);
+      }),
+      views: viewTraces,
+      focalSpecPx: profile.focalLengthPx,
+      ...(fSolved !== null ? { focalSolvedPx: r1(fSolved) } : {}),
+      focalOverride: useSolved,
+      measurementCount: Object.keys(measurements).length,
+      thresholds: {
+        scaleAgreementLimitPct: SCALE_AGREEMENT_LIMIT_PCT,
+        focalOverrideFrac: FOCAL_OVERRIDE_FRAC,
+        minVisibility: MIN_VISIBILITY,
+      },
+    };
+  }
   return result;
 }

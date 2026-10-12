@@ -6,6 +6,7 @@ import {
   HttpError,
   appendSetCookie,
   matchPath,
+  readBody,
   readJson,
   sendError,
   sendJson,
@@ -15,6 +16,16 @@ import {
 import type { Params } from "./http.ts";
 import { clearSessionCookie, getSession, handleGoogleSignIn } from "./auth.ts";
 import type { AuthDeps, Session, VerifyIdToken } from "./auth.ts";
+import {
+  MAX_DIAG_JSON,
+  MAX_FRAME_BYTES,
+  buildDiagBundle,
+  diagReportText,
+  isJpeg,
+  parseAttemptNumber,
+  validateDiagAttempt,
+  validateDiagReport,
+} from "./diagnostics.ts";
 import { createStaticServer } from "./static.ts";
 import type { Store } from "./store.ts";
 import {
@@ -74,6 +85,23 @@ function idParam(params: Params, name: string): string {
   const id = params[name];
   if (!isValidId(id)) throw badRequest(`${name} must match ^[A-Za-z0-9_-]{1,64}$`);
   return id;
+}
+
+/** Non-JSON response (frames, report text, zip bundle). Private, never cached. */
+function sendBytes(res: ServerResponse, type: string, body: Uint8Array | string, filename?: string): void {
+  const buf = typeof body === "string" ? Buffer.from(body, "utf8") : Buffer.from(body.buffer, body.byteOffset, body.byteLength);
+  res.statusCode = 200;
+  res.setHeader("Content-Type", type);
+  res.setHeader("Cache-Control", "private, no-store");
+  res.setHeader("Content-Length", buf.length);
+  if (filename) res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
+  res.end(buf);
+}
+
+async function diagReportOr404(deps: AuthDeps, uid: string, id: string) {
+  const report = await deps.store.getDiagReport(uid, id);
+  if (!report) throw new HttpError(404, "not_found", "Report not found");
+  return report;
 }
 
 const routes: Route[] = [
@@ -177,6 +205,106 @@ const routes: Route[] = [
       if (!r.ok) throw badRequest(r.message);
       await deps.store.putDevice(session.uid, deviceId, r.value, deps.now());
       sendJson(res, 200, { ok: true });
+    },
+  },
+  // ---------------------------------------------------------------- troubleshooting reports
+  {
+    method: "GET",
+    pattern: "/api/diagnostics",
+    handler: async ({ res, session, deps }) => sendJson(res, 200, await deps.store.listDiagReports(session.uid)),
+  },
+  {
+    method: "GET",
+    pattern: "/api/diagnostics/:id",
+    handler: async ({ res, params, session, deps }) => {
+      const id = idParam(params, "id");
+      const report = await diagReportOr404(deps, session.uid, id);
+      sendJson(res, 200, { report, attempts: await deps.store.listDiagAttempts(session.uid, id) });
+    },
+  },
+  {
+    method: "PUT",
+    pattern: "/api/diagnostics/:id",
+    handler: async ({ req, res, params, session, deps }) => {
+      const id = idParam(params, "id");
+      const r = validateDiagReport(await readJson(req, MAX_DIAG_JSON), deps.now());
+      if (!r.ok) throw badRequest(r.message);
+      await deps.store.putDiagReport(session.uid, id, r.value);
+      sendJson(res, 200, { ok: true });
+    },
+  },
+  {
+    method: "DELETE",
+    pattern: "/api/diagnostics/:id",
+    handler: async ({ res, params, session, deps }) => {
+      await deps.store.deleteDiagReport(session.uid, idParam(params, "id"));
+      sendJson(res, 200, { ok: true });
+    },
+  },
+  {
+    method: "PUT",
+    pattern: "/api/diagnostics/:id/attempts/:n",
+    handler: async ({ req, res, params, session, deps }) => {
+      const id = idParam(params, "id");
+      const n = parseAttemptNumber(params.n);
+      if (n === null) throw badRequest("n must be 1-999");
+      const r = validateDiagAttempt(await readJson(req, MAX_DIAG_JSON), n);
+      if (!r.ok) throw badRequest(r.message);
+      await deps.store.putDiagAttempt(session.uid, id, r.value);
+      sendJson(res, 200, { ok: true });
+    },
+  },
+  {
+    method: "PUT",
+    pattern: "/api/diagnostics/:id/frames/:frameId",
+    handler: async ({ req, res, params, session, deps }) => {
+      const id = idParam(params, "id");
+      const frameId = idParam(params, "frameId");
+      if (!String(req.headers["content-type"] ?? "").startsWith("image/jpeg")) {
+        throw new HttpError(415, "unsupported_media_type", "Send Content-Type: image/jpeg");
+      }
+      const jpeg = await readBody(req, MAX_FRAME_BYTES);
+      if (!isJpeg(jpeg)) throw badRequest("Body is not a JPEG");
+      await deps.store.putDiagFrame(session.uid, id, frameId, jpeg, deps.now());
+      sendJson(res, 200, { ok: true });
+    },
+  },
+  {
+    method: "GET",
+    pattern: "/api/diagnostics/:id/frames/:frameId",
+    handler: async ({ res, params, session, deps }) => {
+      const jpeg = await deps.store.getDiagFrame(session.uid, idParam(params, "id"), idParam(params, "frameId"));
+      if (!jpeg) throw new HttpError(404, "not_found", "Frame not found");
+      sendBytes(res, "image/jpeg", jpeg);
+    },
+  },
+  {
+    method: "GET",
+    pattern: "/api/diagnostics/:id/report.txt",
+    handler: async ({ res, params, session, deps }) => {
+      const id = idParam(params, "id");
+      const report = await diagReportOr404(deps, session.uid, id);
+      const attempts = await deps.store.listDiagAttempts(session.uid, id);
+      sendBytes(res, "text/plain; charset=utf-8", diagReportText(report, attempts));
+    },
+  },
+  {
+    method: "GET",
+    pattern: "/api/diagnostics/:id/bundle.zip",
+    handler: async ({ req, res, params, session, deps }) => {
+      const id = idParam(params, "id");
+      const report = await diagReportOr404(deps, session.uid, id);
+      const attempts = await deps.store.listDiagAttempts(session.uid, id);
+      const wanted = parseAttemptNumber(new URLSearchParams(splitUrl(req.url).query).get("attempt") ?? undefined);
+      const attempt = (wanted !== null ? attempts.find((a) => a.n === wanted) : attempts[attempts.length - 1]) ?? null;
+      const frames = new Map<string, Uint8Array>();
+      for (const ref of attempt?.frames ?? []) {
+        if (frames.has(ref.id) || !isValidId(ref.id)) continue;
+        const jpeg = await deps.store.getDiagFrame(session.uid, id, ref.id);
+        if (jpeg) frames.set(ref.id, jpeg);
+      }
+      const zip = buildDiagBundle(report, attempts, attempt, frames);
+      sendBytes(res, "application/zip", zip, `fa-report-${id}${attempt ? `-attempt${attempt.n}` : ""}.zip`);
     },
   },
   {

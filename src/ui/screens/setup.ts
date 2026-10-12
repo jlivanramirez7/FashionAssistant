@@ -4,6 +4,9 @@
 import { getDeviceRecord } from "../../data/devices";
 import { getDeviceId } from "../../data/deviceId";
 import { getCorrectionFactors } from "../../data/settings";
+import { diagLog, resetDiagLog } from "../../diagnostics/log";
+import { createRecorder } from "../../diagnostics/recorder";
+import { diagnosticsEnabled, setDiagnosticsEnabled } from "../../diagnostics/settings";
 import { saveUserDoc } from "../../data/user";
 import type { BodyType, Units } from "../../types";
 import { cmToFeetInches, parseHeight } from "../../units";
@@ -90,6 +93,17 @@ export function render(root: HTMLElement, ctx: AppContext): () => void {
     return h("label", { class: "check" }, c, h("span", null, text));
   });
 
+  // --- troubleshooting data (opt-in, remembered on this phone)
+  const diagBox = h("input", { type: "checkbox" });
+  diagBox.checked = diagnosticsEnabled();
+  diagBox.addEventListener("change", () => setDiagnosticsEnabled(diagBox.checked));
+  const diagCard = h("section", { class: "card" },
+    h("label", { class: "check" }, diagBox, h("span", null, "Save troubleshooting data")),
+    h("p", { class: "hint-text" },
+      "Uploads this scan’s photos, the pipeline’s per-frame results and the on-screen feedback to your account so a failed scan can be diagnosed. View, copy or delete reports from Home > Troubleshooting.",
+    ),
+  );
+
   // --- dev-only debug capture toggle
   let debugBox: HTMLInputElement | null = null;
   const debugSlot = h("div");
@@ -120,6 +134,7 @@ export function render(root: HTMLElement, ctx: AppContext): () => void {
       h("p", { class: "field-label" }, "Before you start"),
       h("div", { class: "checklist" }, checklist),
     ),
+    diagCard,
     debugSlot,
     error,
   );
@@ -139,6 +154,9 @@ export function render(root: HTMLElement, ctx: AppContext): () => void {
     const bodyType = radios.find((r) => r.input.checked)?.b.value ?? "unspecified";
     s.inputs = { heightCm, bodyType, subjectLabel: s.inputs?.subjectLabel ?? "me" };
     s.debugCapture = (debugBox as HTMLInputElement | null)?.checked ?? false;
+    s.diag = diagBox.checked ? createRecorder() : null;
+    resetDiagLog();
+    diagLog(`scan started: height ${heightCm.toFixed(1)}cm, body type ${bodyType}, units ${units}`);
     error.hidden = true;
     start.disabled = true;
     start.textContent = "Starting...";

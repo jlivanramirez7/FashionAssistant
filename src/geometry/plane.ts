@@ -210,3 +210,68 @@ export function solveFocalLength(
   roots.sort((a, b) => Math.abs(a - cam.fy) - Math.abs(b - cam.fy));
   return roots[0];
 }
+
+/** Largest tilt-sensor / lens-centre error (degrees) the pitch solve may absorb. */
+export const MAX_PITCH_CORRECTION_DEG = 4;
+
+/** Copy of a camera pitched up by dPhi radians (tilt reduced by the same angle). */
+export function withPitchOffset(cam: CameraModel, dPhiRad: number): CameraModel {
+  return { ...cam, phiRad: cam.phiRad + dPhiRad, thetaRad: cam.thetaRad - dPhiRad };
+}
+
+/**
+ * Pitch correction (radians) that makes the head and feet rays, with the typed
+ * height, land on one vertical plane - the pitch analogue of solveFocalLength.
+ * With the lens ~14 cm above the floor the feet are only 1-2 deg below the
+ * horizon, so a sub-degree tilt-sensor error doubles the floor distance; the
+ * focal length is the better-known quantity, the pitch is solved instead.
+ * Bisection within +/- MAX_PITCH_CORRECTION_DEG; null when there is no root.
+ */
+export function solvePitchCorrection(
+  cam: CameraModel,
+  vFeet: number,
+  vHead: number,
+  heightCm: number,
+  view: ViewName = "front",
+  opts: { uFeet?: number; uHead?: number; maxDeg?: number } = {},
+): number | null {
+  if (!(heightCm > 0) || !Number.isFinite(vFeet) || !Number.isFinite(vHead) || !(vFeet > vHead)) return null;
+  const uFeet = opts.uFeet ?? cam.cx;
+  const uHead = opts.uHead ?? cam.cx;
+  const g = (dPhi: number): number => {
+    const c = withPitchOffset(cam, dPhi);
+    const d = distanceFromFeet(c, vFeet, uFeet);
+    if (!(d > 0)) return NaN;
+    return geometricHeadHeight(c, view, d, vHead, uHead, heightCm) - heightCm;
+  };
+  const max = ((opts.maxDeg ?? MAX_PITCH_CORRECTION_DEG) * Math.PI) / 180;
+  const N = 160;
+  const roots: number[] = [];
+  let pa = -max;
+  let pg = g(pa);
+  for (let i = 1; i <= N; i++) {
+    const a = -max + (2 * max * i) / N;
+    const gv = g(a);
+    if (Number.isFinite(pg) && Number.isFinite(gv) && (pg === 0 || pg * gv < 0)) {
+      let lo = pa;
+      let hi = a;
+      let glo = pg;
+      for (let k = 0; k < 60; k++) {
+        const m = 0.5 * (lo + hi);
+        const gm = g(m);
+        if (!Number.isFinite(gm)) break;
+        if (glo * gm <= 0) hi = m;
+        else {
+          lo = m;
+          glo = gm;
+        }
+      }
+      roots.push(0.5 * (lo + hi));
+    }
+    pa = a;
+    pg = gv;
+  }
+  if (roots.length === 0) return null;
+  roots.sort((x, y) => Math.abs(x) - Math.abs(y));
+  return roots[0];
+}

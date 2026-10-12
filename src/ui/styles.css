@@ -686,7 +686,8 @@ input.text {
   accent-color: var(--green);
 }
 
-.check input:checked + span {
+/* Checklist items are "done" when ticked; settings toggles (.setting) are not. */
+.check:not(.setting) input:checked + span {
   color: var(--muted);
   text-decoration: line-through;
   text-decoration-color: rgba(255, 255, 255, 0.3);

@@ -44,7 +44,7 @@ export function render(root: HTMLElement, ctx: AppContext): () => void {
   body.append(
     topBar("Troubleshooting", () => ctx.dispatch({ type: "BACK" })),
     h("section", { class: "card" },
-      h("label", { class: "check" }, toggle, h("span", null, "Save troubleshooting data")),
+      h("label", { class: "check setting" }, toggle, h("span", null, "Save troubleshooting data")),
       h("p", { class: "hint-text" },
         "When on, each scan uploads its photos, the per-frame pipeline results and the on-screen feedback to your account. " +
           "After a failed scan, tap Copy latest report and paste it into your message. Each report shows when it was made and the app version.",

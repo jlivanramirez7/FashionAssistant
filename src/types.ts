@@ -344,8 +344,22 @@ export interface PipelineTrace {
   focalSpecPx: number;
   focalSolvedPx?: number;
   focalOverride: boolean;
+  /** Tilt correction applied to every frame (degrees; + = camera pitched further up). */
+  pitchCorrectionDeg?: number;
+  /** Median correction each view alone would need (consistency check). */
+  pitchPerViewDeg?: Partial<Record<ViewName, number>>;
+  /** The correction was within tolerance and used. */
+  pitchApplied?: boolean;
+  /** Floor-vs-typed-height disagreement per view BEFORE the tilt correction (percent). */
+  rawAgreementPct?: Partial<Record<ViewName, number>>;
   measurementCount: number;
-  thresholds: { scaleAgreementLimitPct: number; focalOverrideFrac: number; minVisibility: number };
+  thresholds: {
+    scaleAgreementLimitPct: number;
+    focalOverrideFrac: number;
+    minVisibility: number;
+    pitchToleranceDeg?: number;
+    viewPitchSpreadDeg?: number;
+  };
 }
 
 // ---------------------------------------------------------------- troubleshooting reports

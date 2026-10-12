@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { CapturedFrame, Landmark, PersonMask, ProgressStage, QualityScore, ViewCapture, ViewName } from "../../src/types";
-import { feetPoint, headPoint, runPipeline, toPixelLandmarks, type VisionApi } from "../../src/pipeline/runPipeline";
+import { feetPoint, headPoint, PITCH_TOLERANCE_DEG, runPipeline, toPixelLandmarks, type VisionApi } from "../../src/pipeline/runPipeline";
 import { Body, DEFAULT_CAM, normalized, profileFor, truth } from "./synthetic";
 import { sceneFrames, DIST } from "./scene";
 
@@ -156,15 +156,44 @@ describe("runPipeline (fake vision)", () => {
     expect(r.diagnostics.qualityScores.back).toBeCloseTo(0.2, 9);
   });
 
-  it("flags distance-mismatch when height and floor geometry disagree by > 2%", async () => {
+  it("small floor disagreement (lens offset 3% off): tilt solved within tolerance, reported, no retake", async () => {
     const { captures, vision } = setup();
-    // lens offset 3% too large: the spec focal length stays within 5% of the solve, so
-    // the floor cross-check disagrees with the typed height
     const profile = profileFor({ ...DEFAULT_CAM, lensOffsetCm: DEFAULT_CAM.lensOffsetCm * 1.03 });
-    const r = await runPipeline({ captures, profile, inputs: inputs(175), factors: null, vision });
+    const r = await runPipeline({ captures, profile, inputs: inputs(175), factors: null, vision, trace: true });
     expect(r.solvedFocalLengthPx).toBeUndefined();
-    expect(r.diagnostics.scaleAgreementPct).toBeGreaterThan(2);
-    expect(r.retakeViews.map((x) => x.reason)).toEqual(["distance-mismatch", "distance-mismatch", "distance-mismatch"]);
+    expect(r.diagnostics.scaleAgreementPct).toBeGreaterThan(2); // raw cross-check still reported
+    expect(r.retakeViews).toEqual([]);
+    expect(r.trace!.pitchApplied).toBe(true);
+    expect(Math.abs(r.trace!.pitchCorrectionDeg!)).toBeLessThan(PITCH_TOLERANCE_DEG);
+    expect(r.trace!.rawAgreementPct!.front!).toBeGreaterThan(2);
+  });
+
+  it("a view that disagrees with the others (phone moved) is retaken", async () => {
+    const { captures, vision } = setup();
+    // The sensor says the phone tipped 2.5 deg during the side step, but the image did not change.
+    for (const f of captures.find((c) => c.view === "side")!.frames) f.orientation = { ...f.orientation, tiltDeg: f.orientation.tiltDeg + 2.5 };
+    const r = await runPipeline({ captures, profile: profileFor(DEFAULT_CAM), inputs: inputs(175), factors: null, vision, trace: true });
+    expect(r.trace!.pitchApplied).toBe(true);
+    expect(r.retakeViews).toEqual([{ view: "side", reason: "distance-mismatch" }]);
+  });
+
+  it("tilt correction over tolerance falls back to the focal-length solve", async () => {
+    const { captures, vision } = setup();
+    const profile = profileFor({ ...DEFAULT_CAM, f: DEFAULT_CAM.f * 0.6 });
+    const r = await runPipeline({ captures, profile, inputs: inputs(175), factors: null, vision, trace: true });
+    expect(r.trace!.pitchApplied).toBe(false);
+    expect(r.solvedFocalLengthPx).toBeDefined();
+  });
+
+  it("the solved tilt removes a sub-degree tilt-sensor error (the real-phone failure)", async () => {
+    const { body, captures, vision } = setup();
+    for (const c of captures) for (const f of c.frames) f.orientation = { ...f.orientation, tiltDeg: f.orientation.tiltDeg + 0.7 };
+    const r = await runPipeline({ captures, profile: profileFor(DEFAULT_CAM), inputs: inputs(175), factors: null, vision, trace: true });
+    expect(r.retakeViews).toEqual([]);
+    expect(r.trace!.pitchCorrectionDeg!).toBeCloseTo(0.7, 1);
+    const t = truth(body);
+    expect(Math.abs(r.measurements.chest!.valueCm - t.values.chest)).toBeLessThan(1.5);
+    expect(Math.abs(r.measurements.inseam!.valueCm - t.values.inseam)).toBeLessThan(1);
   });
 
   it("never throws when vision fails everywhere", async () => {

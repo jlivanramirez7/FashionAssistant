@@ -98,7 +98,7 @@ export function render(root: HTMLElement, ctx: AppContext): () => void {
   diagBox.checked = diagnosticsEnabled();
   diagBox.addEventListener("change", () => setDiagnosticsEnabled(diagBox.checked));
   const diagCard = h("section", { class: "card" },
-    h("label", { class: "check" }, diagBox, h("span", null, "Save troubleshooting data")),
+    h("label", { class: "check setting" }, diagBox, h("span", null, "Save troubleshooting data")),
     h("p", { class: "hint-text" },
       "Uploads this scan’s photos, the pipeline’s per-frame results and the on-screen feedback to your account so a failed scan can be diagnosed. View, copy or delete reports from Home > Troubleshooting.",
     ),

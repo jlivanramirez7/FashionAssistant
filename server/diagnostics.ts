@@ -151,6 +151,14 @@ function attemptLines(a: DiagAttempt, timeZone?: string): string[] {
       `Focal: spec ${f1(t.focalSpecPx)}px, solved ${f1(t.focalSolvedPx)}px, override ${t.focalOverride ? "yes" : "no"}; ` +
         `measurements computed: ${t.measurementCount}; scale-agreement limit ${t.thresholds.scaleAgreementLimitPct}%`,
     );
+    if (num(t.pitchCorrectionDeg)) {
+      const per = Object.entries(t.pitchPerViewDeg ?? {}).map(([v, x]) => `${v} ${f2(x as number)}`).join(", ");
+      const raw = Object.entries(t.rawAgreementPct ?? {}).map(([v, x]) => `${v} ${f1(x as number)}%`).join(", ");
+      out.push(
+        `Tilt correction: ${f2(t.pitchCorrectionDeg)} deg ${t.pitchApplied === false ? "NOT applied (over tolerance)" : "applied"} ` +
+          `(per view: ${per || "-"}; tolerance ${t.thresholds.pitchToleranceDeg ?? "?"} deg); raw floor-vs-height mismatch: ${raw || "-"}`,
+      );
+    } else out.push("Tilt correction: none (no solution within limits)");
     for (const v of t.views) {
       const reasons = Object.entries(v.reasons).map(([k, n]) => `${k} x${n}`).join(", ") || "none";
       out.push(

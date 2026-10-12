@@ -21,7 +21,14 @@ import {
   type ViewTrace,
 } from "../types";
 import { buildCamera, focalForFrame, withFocalLength } from "../geometry/camera";
-import { distanceFromFeet, makeViewPlane, solveFocalLength } from "../geometry/plane";
+import {
+  distanceFromFeet,
+  makeViewPlane,
+
+  solveFocalLength,
+  solvePitchCorrection,
+  withPitchOffset,
+} from "../geometry/plane";
 import { computeMeasurements, MIN_VISIBILITY, type FrameData, type ViewData } from "../measure/compute";
 import { bottomRow, topRow } from "../measure/silhouette";
 
@@ -39,6 +46,15 @@ export interface VisionApi {
 export const FOCAL_OVERRIDE_FRAC = 0.05;
 /** Height vs floor-geometry disagreement that triggers a retake (percent). */
 export const SCALE_AGREEMENT_LIMIT_PCT = 2;
+/**
+ * Tilt error the pipeline absorbs (degrees). With the lens ~14 cm up, a 5%
+ * height error and a 0.15 deg tilt error look the same, and phone tilt sensors
+ * are good to ~0.5-1 deg, so the floor can only catch GROSS problems (feet
+ * hidden, phone moved, height wildly off). Beyond this: distance-mismatch.
+ */
+export const PITCH_TOLERANCE_DEG = 2;
+/** A view whose own tilt correction differs from the scan's by more than this is retaken. */
+export const VIEW_PITCH_SPREAD_DEG = 1;
 /** Fraction of the heel->toe span where the floor point under the ankle is assumed. */
 export const ANKLE_ALONG_FOOT = 0.2;
 
@@ -361,7 +377,37 @@ export async function runPipeline(args: {
   }
   progress("outline", 1);
 
+  // Pitch solve: with the lens ~14 cm up, a sub-degree tilt-sensor (or lens
+  // centre) error doubles the floor distance. The phone does not move between
+  // steps, so one correction - the median over every frame - applies to all.
+  const pitchByView: Partial<Record<ViewName, number[]>> = {};
+  const pitchAll: number[] = [];
+  for (const w of work) {
+    if (!w.feet || !w.head) continue;
+    const dp = solvePitchCorrection(w.camera, feetRowFor(w.camera, w.view, w.feet, H), w.head.v, H, w.view, { uFeet: w.feet.u, uHead: w.head.u });
+    if (dp === null) continue;
+    pitchAll.push(dp);
+    (pitchByView[w.view] ??= []).push(dp);
+  }
+  const pitchCorr = median(pitchAll);
+  const DEG = Math.PI / 180;
+  const pitchApplied = pitchCorr !== null && Math.abs(pitchCorr) <= PITCH_TOLERANCE_DEG * DEG;
+  // Raw (uncorrected) floor-vs-typed-height agreement per view: the cross-check reported in diagnostics.
+  const rawAgreement: Partial<Record<ViewName, number>> = {};
+  for (const view of VIEWS) {
+    const xs = work
+      .filter((w) => w.view === view && w.mask && w.feet && w.head)
+      .map((w) => makeViewPlane(w.camera, view, feetRowFor(w.camera, view, w.feet!, H), w.head!.v, H, { uFeet: w.feet!.u, uHead: w.head!.u }).scaleAgreementPct);
+    const m = median(xs);
+    if (m !== null) rawAgreement[view] = m;
+  }
+  if (pitchApplied) {
+    for (const w of work) w.camera = withPitchOffset(w.camera, pitchCorr!);
+  }
+
   // Height solve for the focal length (section 4): median over frames, at profile size.
+  // Only used when the tilt solve above could not explain the floor geometry
+  // (the focal length is the better-known quantity); otherwise it is diagnostic.
   const solvedProfileF: number[] = [];
   for (const w of work) {
     if (!w.feet || !w.head) continue;
@@ -376,7 +422,7 @@ export async function runPipeline(args: {
   }
   const fSolved = median(solvedProfileF);
   let useSolved = false;
-  if (fSolved !== null && profile.focalLengthPx > 0) {
+  if (!pitchApplied && fSolved !== null && profile.focalLengthPx > 0) {
     useSolved = Math.abs(fSolved - profile.focalLengthPx) / profile.focalLengthPx > FOCAL_OVERRIDE_FRAC;
   }
   if (useSolved && fSolved !== null) {
@@ -385,6 +431,7 @@ export async function runPipeline(args: {
       w.camera = withFocalLength(w.camera, fSolved * scale);
     }
   }
+
 
   // 3. Planes per frame, per view.
   const viewData: ViewData[] = [];
@@ -416,7 +463,11 @@ export async function runPipeline(args: {
     const dMed = median(dists);
     if (dMed !== null) distanceM[view] = dMed / 100;
     const aMed = median(agreements);
-    if (aMed !== null) worstAgreement = Math.max(worstAgreement, aMed);
+    const raw = rawAgreement[view];
+    if (raw !== undefined) worstAgreement = Math.max(worstAgreement, raw);
+    const viewPitch = median(pitchByView[view] ?? []);
+    // With the tilt solved, a view is only suspicious when it disagrees with the others.
+    const pitchOff = pitchApplied && viewPitch !== null && Math.abs(viewPitch - pitchCorr!) > VIEW_PITCH_SPREAD_DEG * DEG;
 
     // Retake decisions.
     const reasons = ws.map((w) => w.quality?.reason).filter((r): r is RetakeReason => !!r);
@@ -425,7 +476,7 @@ export async function runPipeline(args: {
     let decision: ViewTrace["decision"] = "ok";
     if (frames.length === 0) decision = "no-person";
     else if (reasons.length * 2 > ws.length) decision = [...counts.entries()].sort((a, b) => b[1] - a[1])[0][0];
-    else if (aMed !== null && aMed > SCALE_AGREEMENT_LIMIT_PCT) decision = "distance-mismatch";
+    else if (pitchApplied ? pitchOff : aMed !== null && aMed > SCALE_AGREEMENT_LIMIT_PCT) decision = "distance-mismatch";
     if (decision !== "ok") retakeViews.push({ view, reason: decision });
     viewTraces.push({
       view,
@@ -493,11 +544,19 @@ export async function runPipeline(args: {
       focalSpecPx: profile.focalLengthPx,
       ...(fSolved !== null ? { focalSolvedPx: r1(fSolved) } : {}),
       focalOverride: useSolved,
+      ...(pitchCorr !== null ? { pitchCorrectionDeg: r3((pitchCorr * 180) / Math.PI) } : {}),
+      pitchApplied,
+      rawAgreementPct: Object.fromEntries(Object.entries(rawAgreement).map(([v, x]) => [v, r3(x!)])),
+      pitchPerViewDeg: Object.fromEntries(
+        Object.entries(pitchByView).map(([v, xs]) => [v, r3(((median(xs ?? []) ?? 0) * 180) / Math.PI)]),
+      ),
       measurementCount: Object.keys(measurements).length,
       thresholds: {
         scaleAgreementLimitPct: SCALE_AGREEMENT_LIMIT_PCT,
         focalOverrideFrac: FOCAL_OVERRIDE_FRAC,
         minVisibility: MIN_VISIBILITY,
+        pitchToleranceDeg: PITCH_TOLERANCE_DEG,
+        viewPitchSpreadDeg: VIEW_PITCH_SPREAD_DEG,
       },
     };
   }
